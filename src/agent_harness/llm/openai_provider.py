@@ -1,0 +1,234 @@
+"""OpenAI LLM provider for agent_harness."""
+from __future__ import annotations
+
+import logging
+from typing import Any, AsyncIterator
+
+import openai
+from openai import AsyncOpenAI
+
+from agent_harness.core.config import LLMConfig
+from agent_harness.core.errors import (
+    LLMAuthenticationError,
+    LLMContextLengthError,
+    LLMError,
+    LLMRateLimitError,
+)
+from agent_harness.core.message import Message, MessageChunk, Role, ToolCall
+from agent_harness.llm.base import BaseLLM
+from agent_harness.llm.types import FinishReason, LLMResponse, StreamDelta, Usage
+from agent_harness.tool.base import ToolSchema
+
+logger = logging.getLogger(__name__)
+
+
+class OpenAIProvider(BaseLLM):
+    """OpenAI API provider (GPT-4o, o1, etc.).
+
+    Handles:
+    - Message format conversion (Message -> OpenAI dict)
+    - Function/tool calling
+    - Streaming
+    - Error mapping to framework exceptions
+    """
+
+    def __init__(self, config: LLMConfig) -> None:
+        super().__init__(config)
+        self._client = AsyncOpenAI(
+            api_key=config.api_key,
+            base_url=config.base_url,
+            timeout=config.timeout,
+        )
+
+    async def generate(
+        self,
+        messages: list[Message],
+        tools: list[ToolSchema] | None = None,
+        tool_choice: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        request_kwargs = self._build_request(
+            messages, tools, tool_choice, temperature, max_tokens, **kwargs
+        )
+
+        try:
+            response = await self._client.chat.completions.create(**request_kwargs)
+        except openai.RateLimitError as e:
+            raise LLMRateLimitError(str(e)) from e
+        except openai.AuthenticationError as e:
+            raise LLMAuthenticationError(str(e)) from e
+        except openai.BadRequestError as e:
+            if "context_length" in str(e).lower() or "maximum context" in str(e).lower():
+                raise LLMContextLengthError(str(e)) from e
+            raise LLMError(str(e)) from e
+        except openai.APIError as e:
+            raise LLMError(str(e)) from e
+
+        return self._parse_response(response)
+
+    async def stream(
+        self,
+        messages: list[Message],
+        tools: list[ToolSchema] | None = None,
+        tool_choice: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[StreamDelta]:
+        request_kwargs = self._build_request(
+            messages, tools, tool_choice, temperature, max_tokens, stream=True, **kwargs
+        )
+
+        try:
+            stream = await self._client.chat.completions.create(**request_kwargs)
+        except openai.RateLimitError as e:
+            raise LLMRateLimitError(str(e)) from e
+        except openai.AuthenticationError as e:
+            raise LLMAuthenticationError(str(e)) from e
+        except openai.APIError as e:
+            raise LLMError(str(e)) from e
+
+        async for chunk in stream:
+            if not chunk.choices:
+                continue
+            choice = chunk.choices[0]
+            delta = choice.delta
+
+            # Parse tool calls from delta
+            delta_tool_calls = None
+            if delta.tool_calls:
+                delta_tool_calls = [
+                    ToolCall(
+                        id=tc.id or "",
+                        name=tc.function.name or "" if tc.function else "",
+                        arguments={},  # arguments come as partial JSON strings in stream
+                    )
+                    for tc in delta.tool_calls
+                ]
+
+            finish_reason = None
+            if choice.finish_reason:
+                finish_reason = _map_finish_reason(choice.finish_reason)
+
+            yield StreamDelta(
+                chunk=MessageChunk(
+                    delta_content=delta.content,
+                    delta_tool_calls=delta_tool_calls,
+                    finish_reason=choice.finish_reason,
+                ),
+                finish_reason=finish_reason,
+            )
+
+    def _build_request(
+        self,
+        messages: list[Message],
+        tools: list[ToolSchema] | None,
+        tool_choice: str | None,
+        temperature: float | None,
+        max_tokens: int | None,
+        stream: bool = False,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        request: dict[str, Any] = {
+            "model": self.config.model,
+            "messages": [self._format_message(m) for m in messages],
+            "temperature": self._resolve_temperature(temperature),
+            "max_tokens": self._resolve_max_tokens(max_tokens),
+            "stream": stream,
+        }
+
+        if tools:
+            request["tools"] = [t.to_openai_format() for t in tools]
+            if tool_choice:
+                if tool_choice in ("auto", "required", "none"):
+                    request["tool_choice"] = tool_choice
+                else:
+                    request["tool_choice"] = {
+                        "type": "function",
+                        "function": {"name": tool_choice},
+                    }
+
+        request.update(kwargs)
+        return request
+
+    @staticmethod
+    def _format_message(msg: Message) -> dict[str, Any]:
+        """Convert a Message to OpenAI API format."""
+        result: dict[str, Any] = {"role": msg.role.value}
+
+        if msg.role == Role.TOOL and msg.tool_result:
+            result["tool_call_id"] = msg.tool_result.tool_call_id
+            result["content"] = msg.tool_result.content
+            return result
+
+        if msg.content is not None:
+            result["content"] = msg.content
+
+        if msg.tool_calls:
+            result["tool_calls"] = [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {
+                        "name": tc.name,
+                        "arguments": __import__("json").dumps(tc.arguments),
+                    },
+                }
+                for tc in msg.tool_calls
+            ]
+
+        if msg.name:
+            result["name"] = msg.name
+
+        return result
+
+    @staticmethod
+    def _parse_response(response: Any) -> LLMResponse:
+        """Convert OpenAI response to LLMResponse."""
+        choice = response.choices[0]
+        msg = choice.message
+
+        # Parse tool calls
+        tool_calls = None
+        if msg.tool_calls:
+            tool_calls = [
+                ToolCall(
+                    id=tc.id,
+                    name=tc.function.name,
+                    arguments=__import__("json").loads(tc.function.arguments) if tc.function.arguments else {},
+                )
+                for tc in msg.tool_calls
+            ]
+
+        message = Message(
+            role=Role.ASSISTANT,
+            content=msg.content,
+            tool_calls=tool_calls,
+        )
+
+        usage = Usage(
+            prompt_tokens=response.usage.prompt_tokens if response.usage else 0,
+            completion_tokens=response.usage.completion_tokens if response.usage else 0,
+            total_tokens=response.usage.total_tokens if response.usage else 0,
+        )
+
+        return LLMResponse(
+            message=message,
+            usage=usage,
+            finish_reason=_map_finish_reason(choice.finish_reason),
+            model=response.model,
+            raw_response=response,
+        )
+
+
+def _map_finish_reason(reason: str | None) -> FinishReason:
+    """Map OpenAI finish reason to FinishReason enum."""
+    mapping = {
+        "stop": FinishReason.STOP,
+        "tool_calls": FinishReason.TOOL_CALLS,
+        "length": FinishReason.LENGTH,
+        "content_filter": FinishReason.CONTENT_FILTER,
+    }
+    return mapping.get(reason or "stop", FinishReason.STOP)

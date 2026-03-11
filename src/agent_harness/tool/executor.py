@@ -1,0 +1,157 @@
+"""Tool executor with concurrency control, timeout, and error handling."""
+from __future__ import annotations
+
+import asyncio
+import logging
+import traceback
+from typing import Any
+
+from agent_harness.core.config import ToolConfig
+from agent_harness.core.errors import ToolError, ToolNotFoundError, ToolTimeoutError, ToolValidationError
+from agent_harness.core.event import EventEmitter
+from agent_harness.core.message import ToolCall, ToolResult
+from agent_harness.tool.registry import ToolRegistry
+
+logger = logging.getLogger(__name__)
+
+
+class ToolExecutor(EventEmitter):
+    """Executes tool calls with concurrency control, timeouts, and error handling.
+
+    Features:
+        - Concurrent execution with configurable max concurrency
+        - Per-tool timeout
+        - Automatic error capture -> ToolResult(is_error=True)
+        - Event emission for observability
+    """
+
+    def __init__(
+        self,
+        registry: ToolRegistry,
+        config: ToolConfig | None = None,
+    ) -> None:
+        self.registry = registry
+        self.config = config or ToolConfig()
+        self._semaphore = asyncio.Semaphore(self.config.max_concurrency)
+
+    async def execute(
+        self,
+        tool_call: ToolCall,
+        timeout: float | None = None,
+    ) -> ToolResult:
+        """Execute a single tool call.
+
+        Args:
+            tool_call: The tool call to execute.
+            timeout: Override default timeout (seconds).
+
+        Returns:
+            ToolResult with the execution result or error.
+        """
+        timeout = timeout or self.config.default_timeout
+
+        await self.emit(
+            "tool.execute.start",
+            tool_name=tool_call.name,
+            tool_call_id=tool_call.id,
+            arguments=tool_call.arguments,
+        )
+
+        try:
+            # Resolve the tool
+            if not self.registry.has(tool_call.name):
+                raise ToolNotFoundError(
+                    f"Tool '{tool_call.name}' not found. "
+                    f"Available: {[t.name for t in self.registry.list_tools()]}"
+                )
+
+            tool = self.registry.get(tool_call.name)
+
+            # Execute with concurrency limit and timeout
+            async with self._semaphore:
+                result_str = await asyncio.wait_for(
+                    tool.execute(**tool_call.arguments),
+                    timeout=timeout,
+                )
+
+            result = ToolResult(
+                tool_call_id=tool_call.id,
+                content=result_str,
+                is_error=False,
+            )
+
+            await self.emit(
+                "tool.execute.end",
+                tool_name=tool_call.name,
+                tool_call_id=tool_call.id,
+                content_length=len(result_str),
+            )
+            return result
+
+        except asyncio.TimeoutError:
+            error_msg = f"Tool '{tool_call.name}' timed out after {timeout}s"
+            logger.warning(error_msg)
+            await self.emit(
+                "tool.execute.error",
+                tool_name=tool_call.name,
+                tool_call_id=tool_call.id,
+                error=error_msg,
+            )
+            return ToolResult(
+                tool_call_id=tool_call.id,
+                content=error_msg,
+                is_error=True,
+            )
+
+        except ToolError as e:
+            error_msg = f"Tool '{tool_call.name}' error: {e}"
+            logger.warning(error_msg)
+            await self.emit(
+                "tool.execute.error",
+                tool_name=tool_call.name,
+                tool_call_id=tool_call.id,
+                error=error_msg,
+            )
+            return ToolResult(
+                tool_call_id=tool_call.id,
+                content=error_msg,
+                is_error=True,
+            )
+
+        except Exception as e:
+            error_msg = f"Tool '{tool_call.name}' unexpected error: {e}\n{traceback.format_exc()}"
+            logger.error(error_msg)
+            await self.emit(
+                "tool.execute.error",
+                tool_name=tool_call.name,
+                tool_call_id=tool_call.id,
+                error=str(e),
+            )
+            return ToolResult(
+                tool_call_id=tool_call.id,
+                content=f"Error: {e}",
+                is_error=True,
+            )
+
+    async def execute_batch(
+        self,
+        tool_calls: list[ToolCall],
+        timeout: float | None = None,
+    ) -> list[ToolResult]:
+        """Execute multiple tool calls concurrently.
+
+        Results are returned in the same order as input tool_calls.
+        Concurrency is bounded by max_concurrency.
+
+        Args:
+            tool_calls: List of tool calls to execute.
+            timeout: Override default timeout per tool.
+
+        Returns:
+            List of ToolResults in the same order as input.
+        """
+        if not tool_calls:
+            return []
+
+        tasks = [self.execute(tc, timeout=timeout) for tc in tool_calls]
+        return list(await asyncio.gather(*tasks))

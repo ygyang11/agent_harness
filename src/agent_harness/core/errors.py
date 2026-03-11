@@ -1,0 +1,93 @@
+"""Agent Harness exception hierarchy.
+
+All framework exceptions inherit from HarnessError, enabling broad catch
+while allowing fine-grained handling of specific error categories.
+"""
+from __future__ import annotations
+from typing import Any
+
+
+class HarnessError(Exception):
+    """Base exception for all agent_harness errors."""
+
+    def __init__(self, message: str = "", *, details: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.details = details or {}
+
+
+# --- LLM Errors ---
+
+class LLMError(HarnessError):
+    """Error during LLM interaction."""
+
+class LLMRateLimitError(LLMError):
+    """LLM API rate limit exceeded. Retryable."""
+    def __init__(self, message: str = "Rate limit exceeded", *, retry_after: float | None = None, **kwargs: Any) -> None:
+        super().__init__(message, **kwargs)
+        self.retry_after = retry_after
+
+class LLMAuthenticationError(LLMError):
+    """Invalid or missing API credentials."""
+
+class LLMContextLengthError(LLMError):
+    """Input exceeds model context window."""
+
+class LLMResponseError(LLMError):
+    """Failed to parse LLM response."""
+
+
+# --- Tool Errors ---
+
+class ToolError(HarnessError):
+    """Error during tool execution."""
+
+class ToolNotFoundError(ToolError):
+    """Requested tool is not registered."""
+
+class ToolTimeoutError(ToolError):
+    """Tool execution exceeded timeout."""
+
+class ToolValidationError(ToolError):
+    """Tool arguments failed validation."""
+
+
+# --- Config Errors ---
+
+class ConfigError(HarnessError):
+    """Configuration error."""
+
+class ConfigMissingError(ConfigError):
+    """Required configuration value is missing."""
+
+
+# --- Context Errors ---
+
+class ContextError(HarnessError):
+    """Error related to agent context."""
+
+class StateTransitionError(ContextError):
+    """Invalid state transition."""
+
+
+# --- Memory Errors ---
+
+class MemoryError(HarnessError):
+    """Error related to memory operations."""
+
+
+# --- Orchestration Errors ---
+
+class OrchestrationError(HarnessError):
+    """Error during agent orchestration."""
+
+class CyclicDependencyError(OrchestrationError):
+    """Detected cyclic dependency in DAG orchestration."""
+
+
+# --- Agent Errors ---
+
+class AgentError(HarnessError):
+    """Error during agent execution."""
+
+class MaxStepsExceededError(AgentError):
+    """Agent exceeded maximum allowed steps."""
