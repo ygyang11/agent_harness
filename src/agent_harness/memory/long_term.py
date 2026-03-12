@@ -1,13 +1,17 @@
 """Long-term memory backed by vector store for semantic retrieval."""
 from __future__ import annotations
 
+import logging
+import math
 import uuid
+from datetime import datetime
 from typing import Any, Callable, Awaitable
 
 from agent_harness.core.message import Message
 from agent_harness.memory.base import BaseMemory, MemoryItem
 from agent_harness.memory.storage.base import BaseVectorStore, VectorDocument
 
+logger = logging.getLogger(__name__)
 
 # Type alias for embedding function
 EmbeddingFn = Callable[[str], Awaitable[list[float]]]
@@ -44,11 +48,14 @@ class LongTermMemory(BaseMemory):
         """Add content to long-term memory with auto-generated embedding."""
         doc_id = uuid.uuid4().hex
         embedding = await self._embed(content)
+        meta = metadata or {}
+        if "created_at" not in meta:
+            meta["created_at"] = datetime.now().isoformat()
         doc = VectorDocument(
             id=doc_id,
             content=content,
             embedding=embedding,
-            metadata=metadata or {},
+            metadata=meta,
         )
         await self._store.upsert([doc])
 
@@ -71,7 +78,7 @@ class LongTermMemory(BaseMemory):
             MemoryItem(
                 content=r.document.content,
                 metadata=r.document.metadata,
-                score=r.score,
+                importance_score=r.score,
             )
             for r in results
         ]
@@ -86,6 +93,44 @@ class LongTermMemory(BaseMemory):
 
     async def clear(self) -> None:
         await self._store.clear()
+
+    async def forget(self, threshold: float = 0.3) -> int:
+        """Remove long-term memories with low weighted score.
+
+        Uses ``list_all()`` on the vector store to scan documents.
+        If the store does not support iteration, returns 0.
+        """
+        docs = await self._store.list_all()
+        if not docs:
+            logger.debug("LongTermMemory.forget: no docs to evaluate (threshold=%.2f)", threshold)
+            return 0
+
+        now = datetime.now()
+        decay_rate = 0.01
+        ids_to_remove: list[str] = []
+
+        for doc in docs:
+            created_str = doc.metadata.get("created_at")
+            if created_str:
+                try:
+                    created = datetime.fromisoformat(created_str)
+                except (ValueError, TypeError):
+                    created = now
+            else:
+                created = now
+
+            hours = (now - created).total_seconds() / 3600
+            time_decay = math.exp(-decay_rate * hours)
+            importance = doc.metadata.get("importance_score", 0.5)
+            weighted = time_decay * (0.8 + importance * 0.4)
+            if weighted < threshold:
+                ids_to_remove.append(doc.id)
+
+        if ids_to_remove:
+            await self._store.delete(ids_to_remove)
+            logger.info("LongTermMemory.forget: removed %d documents", len(ids_to_remove))
+
+        return len(ids_to_remove)
 
     async def size(self) -> int:
         return await self._store.count()

@@ -1,8 +1,14 @@
 """Agent Harness: A complete, extensible agent framework."""
+from agent_harness.logging_config import setup_logging
+
+# Auto-configure logging on import
+setup_logging()
+
 from agent_harness.core.message import Message, Role, ToolCall, ToolResult
-from agent_harness.core.config import HarnessConfig
+from agent_harness.core.config import HarnessConfig, LLMConfig, MemoryConfig, TracingConfig, ToolConfig, SearchConfig
 from agent_harness.core.event import Event, EventBus
 from agent_harness.core.errors import HarnessError
+from agent_harness.llm.base import BaseLLM
 from agent_harness.tool.base import BaseTool, ToolSchema
 from agent_harness.tool.decorator import tool
 from agent_harness.agent.base import BaseAgent, AgentResult
@@ -12,3 +18,36 @@ from agent_harness.agent.conversational import ConversationalAgent
 from agent_harness.context.context import AgentContext
 
 __version__ = "0.1.0"
+
+__all__ = [
+    # Logging
+    "setup_logging",
+    # Core
+    "Message",
+    "Role",
+    "ToolCall",
+    "ToolResult",
+    "HarnessConfig",
+    "LLMConfig",
+    "MemoryConfig",
+    "TracingConfig",
+    "ToolConfig",
+    "SearchConfig",
+    "Event",
+    "EventBus",
+    "HarnessError",
+    # LLM
+    "BaseLLM",
+    # Tool
+    "BaseTool",
+    "ToolSchema",
+    "tool",
+    # Agent
+    "BaseAgent",
+    "AgentResult",
+    "ReActAgent",
+    "PlanAgent",
+    "ConversationalAgent",
+    # Context
+    "AgentContext",
+]

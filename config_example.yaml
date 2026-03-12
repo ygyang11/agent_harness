@@ -1,0 +1,50 @@
+# ============================================================
+# agent_harness — Example Configuration File
+# ============================================================
+# Copy this file to `config.yaml` and fill in your values.
+# config.yaml is git-ignored and will NOT be committed.
+# ============================================================
+
+# --- LLM Provider ---
+llm:
+  provider: "openai"            # "openai" | "anthropic"
+  model: "gpt-5.2"               # Model identifier (e.g. gpt-5.2, claude-4.5-sonnet)
+  temperature: 0.7              # Sampling temperature (0.0 – 2.0)
+  max_tokens: 16384              # Maximum output tokens
+  api_key: ""                   # API key (overrides env var)
+  base_url: ""                  # Custom API endpoint (leave empty for default)
+                                # Examples:
+                                #   OpenAI-compatible: "https://api.openai.com/v1"
+                                #   Azure OpenAI:     "https://<resource>.openai.azure.com/"
+                                #   Local model:      "http://localhost:8000/v1"
+  timeout: 120.0                # Request timeout in seconds
+  max_retries: 5                # Max retry attempts for rate-limit errors
+  retry_delay: 1.0              # Initial retry delay in seconds (exponential backoff)
+
+# --- Tool Execution ---
+tool:
+  max_concurrency: 5            # Max parallel tool executions
+  default_timeout: 60.0         # Per-tool timeout in seconds
+  sandbox_enabled: false        # Enable sandboxed execution (experimental)
+
+# --- Memory ---
+memory:
+  short_term_max_messages: 50   # Max messages in short-term buffer
+  short_term_max_tokens: 20000   # Token budget for short-term memory
+  short_term_strategy: "sliding_window"  # "sliding_window" | "token_limit"
+  forget_threshold: 0.3         # Weighted score below which memories are forgotten
+
+# --- Search ---
+search:
+  provider: "tavily"            # "tavily" | "serpapi"
+  tavily_api_key: ""            # Tavily API key (overrides TAVILY_API_KEY env var)
+  serpapi_api_key: ""           # SerpAPI key (overrides SERPAPI_API_KEY env var)
+
+# --- Tracing & Observability ---
+tracing:
+  enabled: true                 # Enable tracing
+  exporter: "console"           # "console" | "json_file"
+  export_path: "./traces"       # Directory for trace exports
+
+# --- General ---
+verbose: false                  # Enable verbose output

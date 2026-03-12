@@ -47,10 +47,13 @@ class Pipeline:
     def __init__(self, steps: list[PipelineStep]) -> None:
         self.steps = steps
 
-    async def run(self, input: str) -> PipelineResult:
+    async def run(self, input: str, hooks: Any = None) -> PipelineResult:
         current_input = input
         step_results: dict[str, AgentResult] = {}
         skipped: list[str] = []
+
+        if hasattr(hooks, "on_pipeline_start"):
+            await hooks.on_pipeline_start("pipeline")
 
         for step in self.steps:
             # Check condition
@@ -66,6 +69,9 @@ class Pipeline:
             result = await step.agent.run(step_input)
             step_results[step.name] = result
             current_input = result.output
+
+        if hasattr(hooks, "on_pipeline_end"):
+            await hooks.on_pipeline_end("pipeline")
 
         return PipelineResult(
             output=current_input,

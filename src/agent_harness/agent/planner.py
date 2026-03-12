@@ -6,7 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from agent_harness.agent.base import BaseAgent, StepResult
+from agent_harness.agent.base import BaseAgent, StepResult, AgentResult
 from agent_harness.core.message import Message
 from agent_harness.utils.json_utils import parse_json_lenient
 
@@ -15,21 +15,31 @@ logger = logging.getLogger(__name__)
 DEFAULT_PLANNER_SYSTEM_PROMPT = """You are a planning agent. You break down complex tasks into clear, actionable steps.
 
 When given a task:
-1. First, create a plan as a JSON array of steps
-2. Then execute each step one at a time
+1. First, create a plan as a JSON object with a goal and steps
+2. Then execute each step one at a time using available tools
 3. After each step, evaluate progress and adjust if needed
 
-When creating a plan, respond with ONLY a JSON object in this format:
+When creating a plan, respond with ONLY a JSON object in this EXACT format:
 {
-    "goal": "The overall goal",
+    "goal": "The overall goal of the task",
     "steps": [
-        {"id": "1", "description": "First step description", "status": "pending"},
-        {"id": "2", "description": "Second step description", "status": "pending"}
+        {"id": "1", "description": "First step description", "status": "pending", "result": null},
+        {"id": "2", "description": "Second step description", "status": "pending", "result": null}
     ]
 }
 
-When executing a step, use available tools as needed and provide the result.
-When all steps are done, provide a comprehensive final answer."""
+Valid step status values: "pending", "in_progress", "done", "failed"
+- pending: step has not been started yet
+- in_progress: step is currently being executed
+- done: step completed successfully (result field contains the outcome)
+- failed: step failed (result field contains the error description)
+
+IMPORTANT:
+- Always respond with valid JSON when creating a plan
+- Each step must have "id", "description", "status", and "result" fields
+- Keep steps atomic and actionable
+- When executing a step, use available tools as needed and provide the result
+- When all steps are done, provide a comprehensive final answer"""
 
 
 class PlanStep(BaseModel):
@@ -47,9 +57,9 @@ class Plan(BaseModel):
 
     @property
     def current_step(self) -> PlanStep | None:
-        """Get the next pending step."""
+        """Get the next pending or in-progress step."""
         for step in self.steps:
-            if step.status == "pending":
+            if step.status in ("pending", "in_progress"):
                 return step
         return None
 
@@ -88,6 +98,7 @@ class PlanAgent(BaseAgent):
     def __init__(
         self,
         allow_replan: bool = True,
+        max_replans: int = 2,
         system_prompt: str | None = None,
         **kwargs: Any,
     ) -> None:
@@ -95,8 +106,17 @@ class PlanAgent(BaseAgent):
             system_prompt = DEFAULT_PLANNER_SYSTEM_PROMPT
         super().__init__(system_prompt=system_prompt, **kwargs)
         self.allow_replan = allow_replan
+        self.max_replans = max_replans
         self._plan: Plan | None = None
         self._phase: str = "planning"  # "planning" | "executing" | "synthesizing"
+        self._replan_count: int = 0
+
+    async def run(self, input: str | Message) -> AgentResult:
+        """Reset planning state before each run."""
+        self._plan = None
+        self._phase = "planning"
+        self._replan_count = 0
+        return await super().run(input)
 
     async def step(self) -> StepResult:
         """Execute one step of planning or execution."""
@@ -154,26 +174,31 @@ class PlanAgent(BaseAgent):
         self.context.working_memory.set("plan", self._plan.progress_summary)
         self.context.working_memory.set("current_step", current.description)
 
-        # Ask LLM to execute the current step
-        exec_msg = Message.user(
-            f"Execute this step of the plan:\n"
-            f"Step [{current.id}]: {current.description}\n\n"
-            f"Current plan progress:\n{self._plan.progress_summary}\n\n"
-            f"Use tools if needed. When done, provide the result for this step."
-        )
-        await self.context.short_term_memory.add_message(exec_msg)
-
-        response = await self.call_llm()
-
-        # Handle tool calls (ReAct-style within the step)
-        if response.has_tool_calls and response.message.tool_calls:
-            results = await self.execute_tools(response.message.tool_calls)
-            current.status = "in_progress"  # still executing
-            return StepResult(
-                thought=f"Executing step [{current.id}]: {current.description}",
-                action=response.message.tool_calls,
-                observation=results,
+        try:
+            # Ask LLM to execute the current step
+            exec_msg = Message.user(
+                f"Execute this step of the plan:\n"
+                f"Step [{current.id}]: {current.description}\n\n"
+                f"Current plan progress:\n{self._plan.progress_summary}\n\n"
+                f"Use tools if needed. When done, provide the result for this step."
             )
+            await self.context.short_term_memory.add_message(exec_msg)
+
+            response = await self.call_llm()
+
+            # Handle tool calls (ReAct-style within the step)
+            if response.has_tool_calls and response.message.tool_calls:
+                results = await self.execute_tools(response.message.tool_calls)
+                current.status = "in_progress"  # still executing
+                return StepResult(
+                    thought=f"Executing step [{current.id}]: {current.description}",
+                    action=response.message.tool_calls,
+                    observation=results,
+                )
+
+        except Exception as e:
+            logger.warning("PlanAgent step [%s] failed with error: %s", current.id, e)
+            return await self._handle_step_failure(current, str(e))
 
         # Step completed
         current.status = "done"
@@ -189,6 +214,58 @@ class PlanAgent(BaseAgent):
         return StepResult(
             thought=f"Completed step [{current.id}]",
         )
+
+    async def _handle_step_failure(self, step: PlanStep, error_msg: str) -> StepResult:
+        """Handle a failed step — attempt replan if allowed."""
+        step.status = "failed"
+        step.result = error_msg
+        self.context.working_memory.set("plan", self._plan.progress_summary)
+
+        if self.allow_replan and self._replan_count < self.max_replans:
+            logger.info("PlanAgent step [%s] failed, attempting replan (%d/%d)",
+                        step.id, self._replan_count + 1, self.max_replans)
+            return await self._do_replan()
+
+        if self._plan.is_complete:
+            self._phase = "synthesizing"
+
+        return StepResult(thought=f"Step [{step.id}] failed: {error_msg}")
+
+    async def _do_replan(self) -> StepResult:
+        """Request LLM to update the remaining plan steps."""
+        assert self._plan is not None
+        self._replan_count += 1
+
+        remaining = [s for s in self._plan.steps if s.status in ("pending",)]
+        replan_msg = Message.user(
+            f"The current plan needs adjustment. Here is the progress so far:\n\n"
+            f"{self._plan.progress_summary}\n\n"
+            f"Some steps have failed or produced unexpected results. "
+            f"Please provide an updated plan for the REMAINING work only. "
+            f"Keep completed steps as-is and revise or replace the {len(remaining)} "
+            f"pending steps.\n\n"
+            f"Respond with a JSON object in this format:\n"
+            f'{{"steps": [{{"id": "...", "description": "...", "status": "pending"}}]}}'
+        )
+        await self.context.short_term_memory.add_message(replan_msg)
+
+        response = await self.call_llm(tools=None)
+        content = response.message.content or ""
+
+        try:
+            replan_data = parse_json_lenient(content)
+            if isinstance(replan_data, dict) and "steps" in replan_data:
+                new_steps = [PlanStep(**s) for s in replan_data["steps"]]
+                # Replace remaining pending steps with new ones
+                kept = [s for s in self._plan.steps if s.status in ("done", "failed", "in_progress")]
+                self._plan.steps = kept + new_steps
+                self.context.working_memory.set("plan", self._plan.progress_summary)
+                logger.info("PlanAgent replanned: %d new steps", len(new_steps))
+                return StepResult(thought=f"Replanned with {len(new_steps)} new steps")
+        except (ValueError, TypeError) as e:
+            logger.warning("Failed to parse replan from LLM output: %s", e)
+
+        return StepResult(thought="Replan attempted but could not parse new plan")
 
     async def _synthesize_step(self) -> StepResult:
         """Synthesize final answer from all step results."""

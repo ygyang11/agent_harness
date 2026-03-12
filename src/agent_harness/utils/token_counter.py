@@ -20,13 +20,28 @@ _MODEL_ENCODING_MAP: dict[str, str] = {
     "gpt-4-turbo": "cl100k_base",
     "gpt-4": "cl100k_base",
     "gpt-3.5-turbo": "cl100k_base",
+    "gpt-5": "o200k_base",
+    "gpt-5-mini": "o200k_base",
     # Anthropic models: use cl100k_base as approximation
     "claude-3-opus": "cl100k_base",
     "claude-3-sonnet": "cl100k_base",
     "claude-3-haiku": "cl100k_base",
     "claude-3.5-sonnet": "cl100k_base",
     "claude-4-sonnet": "cl100k_base",
+    "claude-4": "cl100k_base",
+    "claude-4.5": "cl100k_base",
+    "claude-5": "cl100k_base",
+    "claude-6": "cl100k_base",
 }
+
+# Prefix-based fallback: if exact match fails, try prefix
+_PREFIX_ENCODING_MAP: list[tuple[str, str]] = [
+    ("gpt-5", "o200k_base"),
+    ("gpt-4o", "o200k_base"),
+    ("gpt-4", "cl100k_base"),
+    ("gpt-3.5", "cl100k_base"),
+    ("claude-", "cl100k_base"),
+]
 
 DEFAULT_ENCODING = "cl100k_base"
 
@@ -47,7 +62,15 @@ def count_tokens(text: str, model: str = "gpt-4o") -> int:
     
     Falls back to word-based approximation if tiktoken is unavailable.
     """
-    encoding_name = _MODEL_ENCODING_MAP.get(model, DEFAULT_ENCODING)
+    encoding_name = _MODEL_ENCODING_MAP.get(model)
+    if encoding_name is None:
+        # Try prefix-based matching
+        for prefix, enc in _PREFIX_ENCODING_MAP:
+            if model.startswith(prefix):
+                encoding_name = enc
+                break
+        else:
+            encoding_name = DEFAULT_ENCODING
     encoding = _get_encoding(encoding_name)
 
     if encoding is not None:

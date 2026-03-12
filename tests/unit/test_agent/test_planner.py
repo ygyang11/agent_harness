@@ -49,6 +49,19 @@ class TestPlanModel:
         assert plan.current_step is not None
         assert plan.current_step.id == "2"
 
+    def test_current_step_in_progress(self) -> None:
+        """current_step should return an in_progress step, not skip it."""
+        plan = Plan(
+            goal="Test",
+            steps=[
+                PlanStep(id="1", description="A", status="done"),
+                PlanStep(id="2", description="B", status="in_progress"),
+                PlanStep(id="3", description="C", status="pending"),
+            ],
+        )
+        assert plan.current_step is not None
+        assert plan.current_step.id == "2"
+
     def test_current_step_none_when_complete(self) -> None:
         plan = Plan(
             goal="Test",

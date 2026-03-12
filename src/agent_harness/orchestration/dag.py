@@ -70,11 +70,14 @@ class DAGOrchestrator:
         for nid in self.nodes:
             dfs(nid)
 
-    async def run(self, input: str) -> DAGResult:
+    async def run(self, input: str, hooks: Any = None) -> DAGResult:
         """Execute the DAG with maximum parallelism."""
         results: dict[str, AgentResult] = {}
         completed: set[str] = set()
         execution_order: list[list[str]] = []
+
+        if hasattr(hooks, "on_dag_start"):
+            await hooks.on_dag_start("dag")
 
         while len(completed) < len(self.nodes):
             # Find ready nodes (all deps completed)
@@ -92,6 +95,8 @@ class DAGOrchestrator:
 
             # Execute ready nodes in parallel
             async def run_node(node_id: str) -> tuple[str, AgentResult]:
+                if hasattr(hooks, "on_dag_node_start"):
+                    await hooks.on_dag_node_start(node_id)
                 node = self.nodes[node_id]
                 if node.input_transform:
                     node_input = node.input_transform(results)
@@ -102,14 +107,27 @@ class DAGOrchestrator:
                 else:
                     node_input = input
                 result = await node.agent.run(node_input)
+                if hasattr(hooks, "on_dag_node_end"):
+                    await hooks.on_dag_node_end(node_id)
                 return node_id, result
 
             batch_results = await asyncio.gather(
-                *(run_node(nid) for nid in ready)
+                *(run_node(nid) for nid in ready),
+                return_exceptions=True,
             )
 
-            for nid, result in batch_results:
-                results[nid] = result
+            for nid, result_or_exc in zip(ready, batch_results):
+                if isinstance(result_or_exc, Exception):
+                    logger.warning("DAG node '%s' failed: %s", nid, result_or_exc)
+                    results[nid] = AgentResult(
+                        output=f"Error: {result_or_exc}", messages=[], steps=[],
+                    )
+                else:
+                    _, result = result_or_exc
+                    results[nid] = result
                 completed.add(nid)
+
+        if hasattr(hooks, "on_dag_end"):
+            await hooks.on_dag_end("dag")
 
         return DAGResult(outputs=results, execution_order=execution_order)

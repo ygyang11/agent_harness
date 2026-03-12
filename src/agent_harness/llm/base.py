@@ -1,17 +1,21 @@
 """Abstract base class for LLM providers in agent_harness."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Callable, Coroutine, TypeVar
 
 from agent_harness.core.config import LLMConfig
+from agent_harness.core.errors import LLMRateLimitError
 from agent_harness.core.event import EventEmitter
 from agent_harness.core.message import Message
 from agent_harness.llm.types import LLMResponse, StreamDelta, Usage
 from agent_harness.tool.base import ToolSchema
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
 
 
 class BaseLLM(ABC, EventEmitter):
@@ -91,10 +95,12 @@ class BaseLLM(ABC, EventEmitter):
         tools: list[ToolSchema] | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
-        """Generate with automatic event emission."""
+        """Generate with automatic event emission and built-in retry."""
         await self.emit("llm.generate.start", model=self.model_name, message_count=len(messages))
         try:
-            response = await self.generate(messages, tools=tools, **kwargs)
+            response = await self._with_retry(
+                lambda: self.generate(messages, tools=tools, **kwargs)
+            )
             await self.emit(
                 "llm.generate.end",
                 model=self.model_name,
@@ -105,6 +111,28 @@ class BaseLLM(ABC, EventEmitter):
         except Exception as e:
             await self.emit("llm.generate.error", model=self.model_name, error=str(e))
             raise
+
+    async def _with_retry(self, call: Callable[[], Coroutine[Any, Any, T]]) -> T:
+        """Retry a coroutine on LLMRateLimitError with exponential backoff."""
+        max_retries = self.config.max_retries
+        delay = self.config.retry_delay
+
+        for attempt in range(max_retries + 1):
+            try:
+                return await call()
+            except LLMRateLimitError as e:
+                if attempt >= max_retries:
+                    raise
+                wait = delay * (2 ** attempt)
+                if hasattr(e, "retry_after") and e.retry_after:
+                    wait = max(wait, e.retry_after)
+                logger.warning(
+                    "Rate limited (attempt %d/%d), retrying in %.1fs: %s",
+                    attempt + 1, max_retries, wait, e,
+                )
+                await asyncio.sleep(wait)
+
+        raise RuntimeError("Unreachable")  # pragma: no cover
 
     def _resolve_temperature(self, temperature: float | None) -> float:
         return temperature if temperature is not None else self.config.temperature

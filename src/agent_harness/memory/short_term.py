@@ -1,10 +1,13 @@
 """Short-term memory: conversation buffer with sliding window and token limits."""
 from __future__ import annotations
 
+import math
+from datetime import datetime
 from typing import Any
 
 from agent_harness.core.message import Message, Role
 from agent_harness.memory.base import BaseMemory, MemoryItem
+from agent_harness.memory.retrieval import HybridRetriever
 from agent_harness.utils.token_counter import count_messages_tokens
 
 
@@ -41,17 +44,20 @@ class ShortTermMemory(BaseMemory):
         self._trim()
 
     async def query(self, query: str, top_k: int = 5) -> list[MemoryItem]:
-        """Return recent messages as MemoryItems (no semantic search)."""
-        recent = self._messages[-top_k:]
-        return [
+        """Query messages using hybrid retrieval (TF-IDF + keyword fallback)."""
+        items = [
             MemoryItem(
                 content=msg.content or "",
                 metadata={"role": msg.role.value},
                 timestamp=msg.created_at,
             )
-            for msg in recent
+            for msg in self._messages
             if msg.content
         ]
+        if not items:
+            return []
+        retriever = HybridRetriever()
+        return retriever.retrieve(query, items, top_k=top_k)
 
     async def get_context_messages(self) -> list[Message]:
         """Get messages suitable for LLM context, respecting limits."""
@@ -59,6 +65,31 @@ class ShortTermMemory(BaseMemory):
 
     async def clear(self) -> None:
         self._messages.clear()
+
+    async def forget(self, threshold: float = 0.3) -> int:
+        """Remove old messages with low weighted score, then apply trim.
+
+        System messages are always preserved.
+        """
+        now = datetime.now()
+        decay_rate = 0.01
+        original_count = len(self._messages)
+
+        kept: list[Message] = []
+        for msg in self._messages:
+            if msg.role == Role.SYSTEM:
+                kept.append(msg)
+                continue
+            hours = (now - msg.created_at).total_seconds() / 3600
+            time_decay = math.exp(-decay_rate * hours)
+            importance = 0.5  # default importance for messages
+            weighted = time_decay * (0.8 + importance * 0.4)
+            if weighted >= threshold:
+                kept.append(msg)
+
+        self._messages = kept
+        self._trim()
+        return original_count - len(self._messages)
 
     async def size(self) -> int:
         return len(self._messages)

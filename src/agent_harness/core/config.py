@@ -23,6 +23,8 @@ class LLMConfig(BaseModel):
     api_key: str | None = None
     base_url: str | None = None
     timeout: float = 120.0
+    max_retries: int = 3
+    retry_delay: float = 1.0
 
     def model_post_init(self, __context: Any) -> None:
         # Auto-resolve API keys from environment if not set
@@ -34,6 +36,9 @@ class LLMConfig(BaseModel):
             env_var = env_map.get(self.provider)
             if env_var:
                 self.api_key = os.environ.get(env_var)
+        # Auto-resolve base_url from environment if not set
+        if self.base_url is None:
+            self.base_url = os.environ.get("HARNESS_LLM_BASE_URL")
 
 
 class ToolConfig(BaseModel):
@@ -50,6 +55,21 @@ class MemoryConfig(BaseModel):
     short_term_max_messages: int = 50
     short_term_max_tokens: int = 8000
     short_term_strategy: str = "sliding_window"  # sliding_window | token_limit
+    forget_threshold: float = 0.3
+
+
+class SearchConfig(BaseModel):
+    """Configuration for search providers."""
+
+    provider: str = "tavily"  # "tavily" | "serpapi"
+    tavily_api_key: str | None = None
+    serpapi_api_key: str | None = None
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.tavily_api_key is None:
+            self.tavily_api_key = os.environ.get("TAVILY_API_KEY")
+        if self.serpapi_api_key is None:
+            self.serpapi_api_key = os.environ.get("SERPAPI_API_KEY")
 
 
 class TracingConfig(BaseModel):
@@ -66,6 +86,7 @@ class HarnessConfig(BaseModel):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     tool: ToolConfig = Field(default_factory=ToolConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
+    search: SearchConfig = Field(default_factory=SearchConfig)
     tracing: TracingConfig = Field(default_factory=TracingConfig)
     verbose: bool = False
 
@@ -85,7 +106,8 @@ class HarnessConfig(BaseModel):
 
         Recognized env vars:
             HARNESS_LLM_PROVIDER, HARNESS_LLM_MODEL, HARNESS_LLM_TEMPERATURE,
-            HARNESS_LLM_MAX_TOKENS, HARNESS_VERBOSE, HARNESS_TRACING_ENABLED
+            HARNESS_LLM_MAX_TOKENS, HARNESS_LLM_BASE_URL,
+            HARNESS_VERBOSE, HARNESS_TRACING_ENABLED
         """
         data: dict[str, Any] = {}
 
@@ -98,6 +120,8 @@ class HarnessConfig(BaseModel):
             llm_data["temperature"] = float(v)
         if v := os.environ.get("HARNESS_LLM_MAX_TOKENS"):
             llm_data["max_tokens"] = int(v)
+        if v := os.environ.get("HARNESS_LLM_BASE_URL"):
+            llm_data["base_url"] = v
         if llm_data:
             data["llm"] = llm_data
 

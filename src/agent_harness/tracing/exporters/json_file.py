@@ -1,20 +1,27 @@
 """JSON file exporter for trace spans.
 
 Writes spans as JSON Lines (one JSON object per line) for analysis.
+Default file path uses a timestamp for unique naming.
 """
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 
 from agent_harness.tracing.tracer import Span
 
 
+def _default_path() -> Path:
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return Path(f"./traces/{ts}.jsonl")
+
+
 class JsonFileExporter:
     """Export spans to a JSON Lines file."""
 
-    def __init__(self, path: str | Path = "./traces/spans.jsonl") -> None:
-        self._path = Path(path)
+    def __init__(self, path: str | Path | None = None) -> None:
+        self._path = Path(path) if path else _default_path()
 
     def export(self, spans: list[Span]) -> None:
         """Append spans to the JSON Lines file."""

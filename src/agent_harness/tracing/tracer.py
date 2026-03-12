@@ -5,6 +5,7 @@ and purpose-built for agent execution tracking.
 """
 from __future__ import annotations
 
+import contextvars
 import uuid
 import logging
 from contextlib import asynccontextmanager, contextmanager
@@ -15,6 +16,14 @@ from typing import Any, AsyncIterator, Callable, Iterator
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
+
+# Context variables for async-safe trace/span tracking
+_current_trace_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "_current_trace_id", default=None
+)
+_current_span_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "_current_span_id", default=None
+)
 
 
 class SpanEvent(BaseModel):
@@ -92,8 +101,6 @@ class Tracer:
     def __init__(self, collector: TraceCollector | None = None, enabled: bool = True) -> None:
         self._collector = collector or TraceCollector()
         self._enabled = enabled
-        self._current_trace_id: str | None = None
-        self._current_span_id: str | None = None
 
     @property
     def collector(self) -> TraceCollector:
@@ -101,13 +108,18 @@ class Tracer:
 
     @asynccontextmanager
     async def span(self, name: str, kind: str = "internal", **attributes: Any) -> AsyncIterator[Span]:
-        """Create a span as an async context manager."""
+        """Create a span as an async context manager.
+
+        Uses contextvars for async-safe parent tracking, so concurrent
+        coroutines sharing the same Tracer instance get correct
+        parent-child relationships.
+        """
         if not self._enabled:
             yield Span(name=name, kind=kind)
             return
 
-        trace_id = self._current_trace_id or uuid.uuid4().hex
-        parent_span_id = self._current_span_id
+        trace_id = _current_trace_id.get() or uuid.uuid4().hex
+        parent_span_id = _current_span_id.get()
 
         s = Span(
             trace_id=trace_id,
@@ -117,10 +129,8 @@ class Tracer:
             attributes=attributes,
         )
 
-        prev_trace_id = self._current_trace_id
-        prev_span_id = self._current_span_id
-        self._current_trace_id = trace_id
-        self._current_span_id = s.span_id
+        token_trace = _current_trace_id.set(trace_id)
+        token_span = _current_span_id.set(s.span_id)
 
         try:
             yield s
@@ -130,8 +140,8 @@ class Tracer:
         finally:
             s.finish()
             self._collector.add_span(s)
-            self._current_trace_id = prev_trace_id
-            self._current_span_id = prev_span_id
+            _current_trace_id.reset(token_trace)
+            _current_span_id.reset(token_span)
 
     def trace(self, name: str, kind: str = "internal") -> Callable:
         """Decorator to trace an async function."""

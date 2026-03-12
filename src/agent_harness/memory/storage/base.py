@@ -66,6 +66,15 @@ class BaseVectorStore(ABC):
         """Return the total number of stored documents."""
         ...
 
+    async def list_all(self) -> list[VectorDocument]:
+        """Return all stored documents.
+
+        Optional operation — not all vector stores support full scan.
+        Default returns empty list. Subclasses that support iteration
+        should override.
+        """
+        return []
+
     @abstractmethod
     async def clear(self) -> None:
         """Remove all documents."""

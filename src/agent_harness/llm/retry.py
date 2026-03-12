@@ -53,19 +53,22 @@ class RateLimiter:
 
     async def acquire(self) -> None:
         """Wait until a request slot is available."""
-        async with self._lock:
-            now = time.monotonic()
-            # Remove timestamps outside the window
-            self._timestamps = [
-                t for t in self._timestamps if now - t < self._window
-            ]
-            if len(self._timestamps) >= self._max_requests:
-                # Wait until the oldest request exits the window
+        while True:
+            async with self._lock:
+                now = time.monotonic()
+                # Remove timestamps outside the window
+                self._timestamps = [
+                    t for t in self._timestamps if now - t < self._window
+                ]
+                if len(self._timestamps) < self._max_requests:
+                    self._timestamps.append(time.monotonic())
+                    return
+                # Calculate wait time but release lock before sleeping
                 wait_time = self._timestamps[0] + self._window - now
-                if wait_time > 0:
-                    logger.debug("Rate limiter: waiting %.1fs", wait_time)
-                    await asyncio.sleep(wait_time)
-            self._timestamps.append(time.monotonic())
+
+            if wait_time > 0:
+                logger.debug("Rate limiter: waiting %.1fs", wait_time)
+                await asyncio.sleep(wait_time)
 
 
 class RetryableLLM:

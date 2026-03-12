@@ -47,13 +47,14 @@ class TestShortTermMemoryBasic:
         assert await mem.get_context_messages() == []
 
     @pytest.mark.asyncio
-    async def test_query_returns_recent(self) -> None:
+    async def test_query_returns_relevant(self) -> None:
         mem = ShortTermMemory()
         for i in range(10):
             await mem.add_message(Message.user(f"msg-{i}"))
-        items = await mem.query("anything", top_k=3)
+        items = await mem.query("msg", top_k=3)
         assert len(items) == 3
-        assert items[-1].content == "msg-9"
+        # All returned items should be from the memory
+        assert all("msg-" in item.content for item in items)
 
 
 class TestSlidingWindowTrim:

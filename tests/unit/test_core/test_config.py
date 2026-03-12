@@ -7,6 +7,7 @@ from agent_harness.core.config import (
     HarnessConfig,
     LLMConfig,
     MemoryConfig,
+    SearchConfig,
     ToolConfig,
     TracingConfig,
 )
@@ -21,6 +22,8 @@ class TestLLMConfig:
         assert cfg.max_tokens == 4096
         assert cfg.timeout == 120.0
         assert cfg.base_url is None
+        assert cfg.max_retries == 3
+        assert cfg.retry_delay == 1.0
 
     def test_api_key_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
@@ -52,6 +55,7 @@ class TestMemoryConfig:
         assert cfg.short_term_max_messages == 50
         assert cfg.short_term_max_tokens == 8000
         assert cfg.short_term_strategy == "sliding_window"
+        assert cfg.forget_threshold == 0.3
 
 
 class TestTracingConfig:
@@ -132,3 +136,21 @@ class TestHarnessConfig:
     def test_from_yaml_file_not_found(self) -> None:
         with pytest.raises(FileNotFoundError):
             HarnessConfig.from_yaml("/nonexistent/config.yaml")
+
+    def test_search_config_in_harness(self) -> None:
+        cfg = HarnessConfig()
+        assert cfg.search.provider == "tavily"
+        assert cfg.search.tavily_api_key is None or isinstance(cfg.search.tavily_api_key, str)
+
+
+class TestSearchConfig:
+    def test_defaults(self) -> None:
+        cfg = SearchConfig()
+        assert cfg.provider == "tavily"
+
+    def test_env_vars(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TAVILY_API_KEY", "tvly-test")
+        monkeypatch.setenv("SERPAPI_API_KEY", "serp-test")
+        cfg = SearchConfig()
+        assert cfg.tavily_api_key == "tvly-test"
+        assert cfg.serpapi_api_key == "serp-test"

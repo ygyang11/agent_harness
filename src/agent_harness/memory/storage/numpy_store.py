@@ -107,6 +107,10 @@ class NumpyVectorStore(BaseVectorStore):
         self._id_index.clear()
         self._dirty = True
 
+    async def list_all(self) -> list[VectorDocument]:
+        """Return all stored documents."""
+        return list(self._documents.values())
+
     def _rebuild_index_if_needed(self) -> None:
         if not self._dirty:
             return

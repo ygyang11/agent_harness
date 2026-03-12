@@ -111,6 +111,56 @@ class TestAgentContextFork:
         assert "AgentContext" in r
 
 
+class TestBuildLLMMessages:
+    @pytest.mark.asyncio
+    async def test_basic_build_from_short_term(self) -> None:
+        from agent_harness.core.message import Message
+        ctx = AgentContext.create()
+        await ctx.short_term_memory.add_message(Message.system("You are helpful."))
+        await ctx.short_term_memory.add_message(Message.user("Hello"))
+
+        msgs = await ctx.build_llm_messages()
+        assert len(msgs) == 2
+        assert msgs[0].role.value == "system"
+        assert msgs[1].role.value == "user"
+
+    @pytest.mark.asyncio
+    async def test_build_injects_working_memory(self) -> None:
+        from agent_harness.core.message import Message
+        ctx = AgentContext.create()
+        await ctx.short_term_memory.add_message(Message.system("System"))
+        await ctx.short_term_memory.add_message(Message.user("Hi"))
+        ctx.working_memory.set("goal", "test goal")
+
+        msgs = await ctx.build_llm_messages(include_working=True)
+        # Working memory injected after system message
+        assert len(msgs) == 3
+        assert msgs[0].role.value == "system"
+        assert "Working Memory" in msgs[1].content
+        assert msgs[2].role.value == "user"
+
+    @pytest.mark.asyncio
+    async def test_build_skips_working_when_disabled(self) -> None:
+        from agent_harness.core.message import Message
+        ctx = AgentContext.create()
+        await ctx.short_term_memory.add_message(Message.user("Hi"))
+        ctx.working_memory.set("goal", "ignored")
+
+        msgs = await ctx.build_llm_messages(include_working=False)
+        assert len(msgs) == 1
+
+    @pytest.mark.asyncio
+    async def test_build_with_base_messages_override(self) -> None:
+        from agent_harness.core.message import Message
+        ctx = AgentContext.create()
+        await ctx.short_term_memory.add_message(Message.user("ignored"))
+
+        custom = [Message.system("Custom"), Message.user("Direct")]
+        msgs = await ctx.build_llm_messages(base_messages=custom, include_working=False)
+        assert len(msgs) == 2
+        assert msgs[0].content == "Custom"
+
+
 class TestStateManager:
     """Tests for state machine transitions."""
 

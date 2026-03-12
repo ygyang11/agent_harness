@@ -18,12 +18,13 @@ class MemoryItem(BaseModel):
     """A single item stored in memory."""
     content: str
     metadata: dict[str, Any] = Field(default_factory=dict)
-    score: float | None = None  # relevance score (for retrieval)
+    importance_score: float | None = None  # importance/relevance score
+    time_score: float = 0.0  # time decay score
     timestamp: datetime = Field(default_factory=lambda: datetime.now())
 
     def __repr__(self) -> str:
         preview = self.content[:50] + "..." if len(self.content) > 50 else self.content
-        score_str = f", score={self.score:.3f}" if self.score is not None else ""
+        score_str = f", importance={self.importance_score:.3f}" if self.importance_score is not None else ""
         return f"MemoryItem({preview!r}{score_str})"
 
 
@@ -81,6 +82,21 @@ class BaseMemory(ABC):
     @abstractmethod
     async def clear(self) -> None:
         """Clear all stored content."""
+        ...
+
+    @abstractmethod
+    async def forget(self, threshold: float = 0.3) -> int:
+        """Remove memories with weighted score below threshold.
+
+        The weighted score is computed as:
+            time_decay * (0.8 + importance_score * 0.4)
+
+        Args:
+            threshold: Memories with weighted score below this are removed.
+
+        Returns:
+            Number of items removed.
+        """
         ...
 
     @abstractmethod

@@ -10,7 +10,7 @@ import os
 from agent_harness import ConversationalAgent, HarnessConfig
 from agent_harness.llm import OpenAIProvider
 from agent_harness.core import LLMConfig
-from agent_harness.orchestration import AgentTeam
+from agent_harness.orchestration import AgentTeam, TeamMode
 
 
 def create_agents(llm: OpenAIProvider) -> tuple:
@@ -65,7 +65,7 @@ async def demo_supervisor(agents: tuple, topic: str) -> None:
 
     team = AgentTeam(
         agents=[optimist, pessimist, realist],
-        mode="supervisor",
+        mode=TeamMode.SUPERVISOR,
         supervisor=supervisor,
     )
 
@@ -84,7 +84,7 @@ async def demo_debate(agents: tuple, topic: str) -> None:
 
     team = AgentTeam(
         agents=[optimist, pessimist, realist],
-        mode="debate",
+        mode=TeamMode.DEBATE,
         supervisor=supervisor,
     )
 
@@ -103,7 +103,7 @@ async def demo_round_robin(agents: tuple, topic: str) -> None:
 
     team = AgentTeam(
         agents=[optimist, pessimist, realist],
-        mode="round_robin",
+        mode=TeamMode.ROUND_ROBIN,
         max_rounds=2,
     )
 

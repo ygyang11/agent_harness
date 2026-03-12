@@ -1,16 +1,36 @@
+# ===== IDE & OS =====
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ===== Python =====
 __pycache__/
 *.py[cod]
+*.pyo
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
-.DS_Store
 .coverage
 htmlcov/
+
+# ===== Virtual Environments & Dependencies =====
 .venv/
 venv/
+env/
+*.egg-info/
+
+# ===== Build Artifacts =====
 dist/
 build/
-*.egg-info/
-traces/
+
+# ===== Project Private Files =====
+config.yaml
+.env
 .framework_api_reference.txt
 LEARN.md
+
+# ===== Output & Traces =====
+traces/

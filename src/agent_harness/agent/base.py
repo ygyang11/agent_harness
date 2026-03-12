@@ -103,7 +103,14 @@ class BaseAgent(ABC, EventEmitter):
         Repeatedly calls step() until:
         1. step() returns a final response, or
         2. max_steps is reached.
+
+        Safe to call multiple times — state is reset automatically when
+        the agent is in a terminal state (FINISHED or ERROR).
         """
+        # Reset state for agent reuse (e.g., team orchestration, pipelines)
+        if self.context.state.is_terminal:
+            self.context.state.reset()
+
         # Normalize input
         if isinstance(input, str):
             input_msg = Message.user(input)
@@ -124,7 +131,7 @@ class BaseAgent(ABC, EventEmitter):
         await self.emit("agent.run.start", agent=self.name, input=input_text)
 
         steps: list[StepResult] = []
-        total_usage = Usage()
+        self._total_usage = Usage()
         final_output = ""
 
         try:
@@ -162,7 +169,7 @@ class BaseAgent(ABC, EventEmitter):
             output=final_output,
             messages=messages,
             steps=steps,
-            usage=total_usage,
+            usage=self._total_usage,
         )
 
         await self.hooks.on_run_end(self.name, final_output)
@@ -187,18 +194,25 @@ class BaseAgent(ABC, EventEmitter):
         self,
         messages: list[Message] | None = None,
         tools: list[ToolSchema] | None = None,
+        use_long_term: bool = False,
+        long_term_query: str | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
-        """Call the LLM with current context messages or provided messages."""
-        if messages is None:
-            messages = await self.context.short_term_memory.get_context_messages()
+        """Call the LLM with current context messages or provided messages.
 
-        # Inject working memory if available
-        working_msgs = await self.context.working_memory.get_context_messages()
-        if working_msgs:
-            # Insert working memory after system message
-            inject_idx = 1 if messages and messages[0].role.value == "system" else 0
-            messages = messages[:inject_idx] + working_msgs + messages[inject_idx:]
+        Args:
+            messages: Override messages. If None, uses short-term memory.
+            tools: Override tool schemas. If None, uses registered tools.
+            use_long_term: Query long-term memory and inject results.
+            long_term_query: Custom query for long-term retrieval.
+            **kwargs: Passed through to llm.generate_with_events().
+        """
+        messages = await self.context.build_llm_messages(
+            base_messages=messages,
+            include_working=True,
+            include_long_term=use_long_term,
+            long_term_query=long_term_query,
+        )
 
         if tools is None and self.tool_schemas:
             tools = self.tool_schemas
@@ -208,6 +222,10 @@ class BaseAgent(ABC, EventEmitter):
             self.context.state.transition(AgentState.THINKING)
 
         response = await self.llm.generate_with_events(messages, tools=tools, **kwargs)
+
+        # Accumulate token usage
+        if hasattr(self, '_total_usage'):
+            self._total_usage = self._total_usage + response.usage
 
         # Store assistant message in memory
         await self.context.short_term_memory.add_message(response.message)
