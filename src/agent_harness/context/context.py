@@ -8,7 +8,7 @@ from agent_harness.core.config import HarnessConfig
 from agent_harness.core.event import EventBus
 from agent_harness.core.message import Message, Role
 from agent_harness.memory.short_term import ShortTermMemory
-from agent_harness.memory.working import WorkingMemory
+from agent_harness.memory.working_term import WorkingMemory
 from agent_harness.context.state import StateManager
 from agent_harness.context.variables import ContextVariables
 
@@ -42,11 +42,12 @@ class AgentContext:
         event_bus: EventBus | None = None,
         tracer: Tracer | None = None,
     ) -> None:
-        self.config = config or HarnessConfig()
+        self.config = config or HarnessConfig.get()
         self.short_term_memory = short_term_memory or ShortTermMemory(
             max_messages=self.config.memory.short_term_max_messages,
             max_tokens=self.config.memory.short_term_max_tokens,
             strategy=self.config.memory.short_term_strategy,
+            model=self.config.llm.model,
         )
         self.long_term_memory = long_term_memory
         self.working_memory = working_memory or WorkingMemory()
@@ -82,6 +83,7 @@ class AgentContext:
                 max_messages=self.config.memory.short_term_max_messages,
                 max_tokens=self.config.memory.short_term_max_tokens,
                 strategy=self.config.memory.short_term_strategy,
+                model=self.config.llm.model,
             ),
             long_term_memory=self.long_term_memory,
             working_memory=WorkingMemory(),

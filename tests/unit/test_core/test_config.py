@@ -10,6 +10,9 @@ from agent_harness.core.config import (
     SearchConfig,
     ToolConfig,
     TracingConfig,
+    resolve_llm_config,
+    resolve_search_config,
+    resolve_tool_config,
 )
 
 
@@ -39,6 +42,13 @@ class TestLLMConfig:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "ak-test")
         cfg = LLMConfig(provider="anthropic")
         assert cfg.api_key == "ak-test"
+
+    def test_blank_fields_fall_back_to_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        monkeypatch.setenv("HARNESS_LLM_BASE_URL", "https://example.com/v1")
+        cfg = LLMConfig(api_key="", base_url="")
+        assert cfg.api_key == "sk-test"
+        assert cfg.base_url == "https://example.com/v1"
 
 
 class TestToolConfig:
@@ -142,6 +152,37 @@ class TestHarnessConfig:
         assert cfg.search.provider == "tavily"
         assert cfg.search.tavily_api_key is None or isinstance(cfg.search.tavily_api_key, str)
 
+    def test_load_merges_yaml_and_env(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+        path = tmp_path / "config.yaml"
+        path.write_text(
+            "llm:\n"
+            "  provider: openai\n"
+            "  model: yaml-model\n"
+            "tracing:\n"
+            "  enabled: false\n"
+        )
+        monkeypatch.setenv("HARNESS_LLM_MODEL", "env-model")
+
+        cfg = HarnessConfig.load(path, env_override=True)
+
+        assert cfg.llm.model == "env-model"
+        assert cfg.tracing.enabled is False
+        assert HarnessConfig.get() is cfg
+
+    def test_load_without_env_override_keeps_yaml(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+        path = tmp_path / "config.yaml"
+        path.write_text(
+            "llm:\n"
+            "  provider: openai\n"
+            "  model: yaml-model\n"
+        )
+        monkeypatch.setenv("HARNESS_LLM_MODEL", "env-model")
+
+        cfg = HarnessConfig.load(path, env_override=False)
+
+        assert cfg.llm.model == "yaml-model"
+        assert HarnessConfig.get() is cfg
+
 
 class TestSearchConfig:
     def test_defaults(self) -> None:
@@ -154,3 +195,27 @@ class TestSearchConfig:
         cfg = SearchConfig()
         assert cfg.tavily_api_key == "tvly-test"
         assert cfg.serpapi_api_key == "serp-test"
+
+    def test_blank_fields_fall_back_to_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TAVILY_API_KEY", "tvly-test")
+        monkeypatch.setenv("SERPAPI_API_KEY", "serp-test")
+        cfg = SearchConfig(tavily_api_key="", serpapi_api_key="")
+        assert cfg.tavily_api_key == "tvly-test"
+        assert cfg.serpapi_api_key == "serp-test"
+
+
+class TestResolveConfigHelpers:
+    def test_resolve_llm_config(self) -> None:
+        cfg = HarnessConfig(llm=LLMConfig(model="m1"))
+        assert resolve_llm_config(cfg) is cfg.llm
+        assert resolve_llm_config(cfg.llm) is cfg.llm
+
+    def test_resolve_tool_config(self) -> None:
+        cfg = HarnessConfig(tool=ToolConfig(max_concurrency=9))
+        assert resolve_tool_config(cfg) is cfg.tool
+        assert resolve_tool_config(cfg.tool) is cfg.tool
+
+    def test_resolve_search_config(self) -> None:
+        cfg = HarnessConfig(search=SearchConfig(provider="serpapi"))
+        assert resolve_search_config(cfg) is cfg.search
+        assert resolve_search_config(cfg.search) is cfg.search

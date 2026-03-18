@@ -49,6 +49,7 @@ class ShortTermMemory(BaseMemory):
             MemoryItem(
                 content=msg.content or "",
                 metadata={"role": msg.role.value},
+                importance_score=msg.metadata.get("importance_score", 0.5),
                 timestamp=msg.created_at,
             )
             for msg in self._messages
@@ -82,7 +83,7 @@ class ShortTermMemory(BaseMemory):
                 continue
             hours = (now - msg.created_at).total_seconds() / 3600
             time_decay = math.exp(-decay_rate * hours)
-            importance = 0.5  # default importance for messages
+            importance = msg.metadata.get("importance_score", 0.5)
             weighted = time_decay * (0.8 + importance * 0.4)
             if weighted >= threshold:
                 kept.append(msg)

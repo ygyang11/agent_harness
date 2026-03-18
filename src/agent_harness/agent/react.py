@@ -8,7 +8,8 @@ from agent_harness.llm.types import FinishReason
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_REACT_SYSTEM_PROMPT = """You are a helpful AI assistant with access to tools.
+REACT_PROMPTS: dict[str, str] = {
+    "system.default": """You are a helpful AI assistant with access to tools.
 
 When you need information or need to take action, use the available tools.
 Think step by step about what you need to do, then take action.
@@ -18,7 +19,8 @@ Important:
 - Use tools when you need external information or capabilities
 - You can call multiple tools at once if they are independent
 - After receiving tool results, analyze them before deciding next steps
-- Provide a clear, comprehensive final answer when ready"""
+- Provide a clear, comprehensive final answer when ready""",
+}
 
 
 class ReActAgent(BaseAgent):
@@ -47,7 +49,7 @@ class ReActAgent(BaseAgent):
 
     def __init__(self, system_prompt: str | None = None, **kwargs):
         if system_prompt is None:
-            system_prompt = DEFAULT_REACT_SYSTEM_PROMPT
+            system_prompt = REACT_PROMPTS["system.default"]
         super().__init__(system_prompt=system_prompt, **kwargs)
 
     async def step(self) -> StepResult:

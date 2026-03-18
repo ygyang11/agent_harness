@@ -7,17 +7,19 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from agent_harness.core.config import HarnessConfig
 from agent_harness.core.errors import AgentError, MaxStepsExceededError
 from agent_harness.core.event import EventEmitter
 from agent_harness.core.message import Message, ToolCall, ToolResult
 from agent_harness.llm.base import BaseLLM
+from agent_harness.llm import create_llm
 from agent_harness.llm.types import LLMResponse, Usage
 from agent_harness.tool.base import BaseTool, ToolSchema
 from agent_harness.tool.executor import ToolExecutor
 from agent_harness.tool.registry import ToolRegistry
 from agent_harness.context.context import AgentContext
 from agent_harness.context.state import AgentState
-from agent_harness.agent.hooks import AgentHooks, DefaultHooks
+from agent_harness.agent.hooks import DefaultHooks, resolve_hooks
 
 logger = logging.getLogger(__name__)
 
@@ -53,27 +55,37 @@ class BaseAgent(ABC, EventEmitter):
         llm: LLM provider for generation.
         tools: List of available tools.
         context: Agent runtime context.
-        hooks: Lifecycle hooks for observation/modification.
+        hooks: Lifecycle hooks (inherits DefaultHooks). When tracing.enabled=True
+            and hooks is not provided, TracingHooks is auto-created from config.
         max_steps: Maximum steps before forced termination.
         system_prompt: System prompt for the agent.
+        use_long_term_memory: If True, call_llm() queries long-term memory by default.
+        config: Optional config used to create context when context is not provided.
     """
 
     def __init__(
         self,
         name: str,
-        llm: BaseLLM,
+        llm: BaseLLM | None = None,
         tools: list[BaseTool] | None = None,
         context: AgentContext | None = None,
-        hooks: AgentHooks | None = None,
+        hooks: DefaultHooks | None = None,
         max_steps: int = 20,
         system_prompt: str = "",
+        use_long_term_memory: bool = False,
+        *,
+        config: HarnessConfig | None = None,
     ) -> None:
         self.name = name
-        self.llm = llm
-        self.context = context or AgentContext.create()
-        self.hooks = hooks or DefaultHooks()
+        if context is not None:
+            self.context = context
+        else:
+            self.context = AgentContext.create(config=config)
+        self.llm = llm or create_llm(self.context.config)
+        self.hooks = resolve_hooks(hooks, self.context.config)
         self.max_steps = max_steps
         self.system_prompt = system_prompt
+        self.use_long_term_memory = use_long_term_memory
 
         # Set up tool registry and executor
         self.tool_registry = ToolRegistry()
@@ -81,7 +93,7 @@ class BaseAgent(ABC, EventEmitter):
             self.tool_registry.register(t)
         self.tool_executor = ToolExecutor(
             self.tool_registry,
-            config=self.context.config.tool,
+            config=self.context.config,
         )
 
         # Wire event bus
@@ -194,7 +206,7 @@ class BaseAgent(ABC, EventEmitter):
         self,
         messages: list[Message] | None = None,
         tools: list[ToolSchema] | None = None,
-        use_long_term: bool = False,
+        use_long_term: bool | None = None,
         long_term_query: str | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
@@ -204,9 +216,13 @@ class BaseAgent(ABC, EventEmitter):
             messages: Override messages. If None, uses short-term memory.
             tools: Override tool schemas. If None, uses registered tools.
             use_long_term: Query long-term memory and inject results.
+                If None, falls back to self.use_long_term_memory.
             long_term_query: Custom query for long-term retrieval.
             **kwargs: Passed through to llm.generate_with_events().
         """
+        if use_long_term is None:
+            use_long_term = self.use_long_term_memory
+
         messages = await self.context.build_llm_messages(
             base_messages=messages,
             include_working=True,

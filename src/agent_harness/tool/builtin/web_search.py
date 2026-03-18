@@ -2,18 +2,14 @@
 from __future__ import annotations
 
 import logging
-import os
 
-from agent_harness.core.config import SearchConfig
+from agent_harness.core.config import resolve_search_config
 from agent_harness.tool.decorator import tool
+from agent_harness.utils.token_counter import truncate_text_by_tokens
 
 logger = logging.getLogger(__name__)
 
-
-def _resolve_config() -> SearchConfig:
-    """Resolve SearchConfig (reads from env vars via model_post_init)."""
-    provider = os.environ.get("HARNESS_SEARCH_PROVIDER", "tavily")
-    return SearchConfig(provider=provider)
+_MAX_SNIPPET_TOKENS = 15000
 
 
 async def _search_tavily(query: str, max_results: int, api_key: str) -> str:
@@ -33,7 +29,11 @@ async def _search_tavily(query: str, max_results: int, api_key: str) -> str:
     lines: list[str] = []
     for i, r in enumerate(results, 1):
         title = r.get("title", "No title")
-        snippet = r.get("content", "")[:2000]
+        snippet = truncate_text_by_tokens(
+            r.get("content", ""),
+            max_tokens=_MAX_SNIPPET_TOKENS,
+            suffix="...",
+        )
         url = r.get("url", "")
         lines.append(f"{i}. {title}\n   {snippet}\n   URL: {url}")
     return "\n\n".join(lines)
@@ -60,7 +60,11 @@ async def _search_serpapi(query: str, max_results: int, api_key: str) -> str:
     lines: list[str] = []
     for i, r in enumerate(organic[:max_results], 1):
         title = r.get("title", "No title")
-        snippet = r.get("snippet", "")[:2000]
+        snippet = truncate_text_by_tokens(
+            r.get("snippet", ""),
+            max_tokens=_MAX_SNIPPET_TOKENS,
+            suffix="...",
+        )
         url = r.get("link", "")
         lines.append(f"{i}. {title}\n   {snippet}\n   URL: {url}")
     return "\n\n".join(lines)
@@ -70,21 +74,15 @@ async def _search_serpapi(query: str, max_results: int, api_key: str) -> str:
 async def web_search(query: str, max_results: int = 5) -> str:
     """Search the web for information using Tavily or SerpAPI.
 
-    Configure the search provider via config.yaml or environment variables
-    (TAVILY_API_KEY, SERPAPI_API_KEY, HARNESS_SEARCH_PROVIDER).
-
     Args:
         query: The search query string.
         max_results: Maximum number of results to return.
-
-    Returns:
-        Formatted search results with title, snippet, and URL for each result.
     """
-    config = _resolve_config()
-    provider = config.provider
+    cfg = resolve_search_config(None)
+    provider = cfg.provider
 
     if provider == "tavily":
-        api_key = config.tavily_api_key or ""
+        api_key = cfg.tavily_api_key or ""
         if not api_key:
             return (
                 "Web search not configured: TAVILY_API_KEY not set. "
@@ -92,7 +90,7 @@ async def web_search(query: str, max_results: int = 5) -> str:
             )
         return await _search_tavily(query, max_results, api_key)
     elif provider == "serpapi":
-        api_key = config.serpapi_api_key or ""
+        api_key = cfg.serpapi_api_key or ""
         if not api_key:
             return (
                 "Web search not configured: SERPAPI_API_KEY not set. "

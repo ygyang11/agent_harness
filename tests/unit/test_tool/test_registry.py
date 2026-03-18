@@ -34,12 +34,16 @@ class TestToolRegistry:
         with pytest.raises(KeyError):
             reg.get("nonexistent")
 
-    def test_has(self) -> None:
+    def test_registry_membership_contract(self) -> None:
         reg = ToolRegistry()
         t = self._make_tool()
         assert reg.has("my_tool") is False
+        assert "my_tool" not in reg
+        assert len(reg) == 0
         reg.register(t)
         assert reg.has("my_tool") is True
+        assert "my_tool" in reg
+        assert len(reg) == 1
 
     def test_list_tools(self) -> None:
         reg = ToolRegistry()
@@ -59,20 +63,6 @@ class TestToolRegistry:
         assert len(schemas) == 1
         assert schemas[0].name == "x"
         assert schemas[0].description == "Desc X"
-
-    def test_len(self) -> None:
-        reg = ToolRegistry()
-        assert len(reg) == 0
-        reg.register(self._make_tool("a"))
-        assert len(reg) == 1
-        reg.register(self._make_tool("b"))
-        assert len(reg) == 2
-
-    def test_contains(self) -> None:
-        reg = ToolRegistry()
-        reg.register(self._make_tool("present"))
-        assert "present" in reg
-        assert "absent" not in reg
 
     def test_unregister(self) -> None:
         reg = ToolRegistry()

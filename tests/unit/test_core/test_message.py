@@ -7,23 +7,19 @@ from agent_harness.core.message import Message, MessageChunk, Role, ToolCall, To
 
 
 class TestRole:
-    def test_role_values(self) -> None:
-        assert Role.SYSTEM.value == "system"
-        assert Role.USER.value == "user"
-        assert Role.ASSISTANT.value == "assistant"
-        assert Role.TOOL.value == "tool"
-
-    def test_role_direct(self) -> None:
-        assert Role.SYSTEM == "system"
-        assert Role.USER == "user"
-        assert Role.ASSISTANT == "assistant"
-        assert Role.TOOL == "tool"
-
-    def test_role_is_str(self) -> None:
-        assert isinstance(Role.SYSTEM, str)
-        assert isinstance(Role.USER, str)
-        assert isinstance(Role.ASSISTANT, str)
-        assert isinstance(Role.TOOL, str)
+    @pytest.mark.parametrize(
+        ("role", "expected"),
+        [
+            (Role.SYSTEM, "system"),
+            (Role.USER, "user"),
+            (Role.ASSISTANT, "assistant"),
+            (Role.TOOL, "tool"),
+        ],
+    )
+    def test_role_contract(self, role: Role, expected: str) -> None:
+        assert role.value == expected
+        assert role == expected
+        assert isinstance(role, str)
 
 
 class TestToolCall:
@@ -104,16 +100,16 @@ class TestMessageFactories:
 
 
 class TestHasToolCalls:
-    def test_no_tool_calls(self) -> None:
-        msg = Message.assistant("plain text")
-        assert msg.has_tool_calls is False
-
-    def test_none_tool_calls(self) -> None:
-        msg = Message(role=Role.ASSISTANT, content="x", tool_calls=None)
-        assert msg.has_tool_calls is False
-
-    def test_empty_tool_calls(self) -> None:
-        msg = Message(role=Role.ASSISTANT, content="x", tool_calls=[])
+    @pytest.mark.parametrize(
+        "msg",
+        [
+            Message.assistant("plain text"),
+            Message(role=Role.ASSISTANT, content="x", tool_calls=None),
+            Message(role=Role.ASSISTANT, content="x", tool_calls=[]),
+        ],
+        ids=["assistant_text", "tool_calls_none", "tool_calls_empty"],
+    )
+    def test_has_tool_calls_false_cases(self, msg: Message) -> None:
         assert msg.has_tool_calls is False
 
     def test_with_tool_calls(self) -> None:

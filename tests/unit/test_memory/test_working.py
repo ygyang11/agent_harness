@@ -1,10 +1,13 @@
 """Tests for agent_harness.memory.working — WorkingMemory scratchpad and history."""
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
 import pytest
 
 from agent_harness.core.message import Message, Role
-from agent_harness.memory.working import WorkingMemory
+from agent_harness.memory.working_term import WorkingMemory, ScratchpadCategory
+from agent_harness.utils.token_counter import count_tokens
 
 
 class TestWorkingMemoryKV:
@@ -61,15 +64,88 @@ class TestToPromptString:
         wm.set("goal", "find data")
         wm.set("status", "in progress")
         result = wm.to_prompt_string()
-        assert "## Working Memory" in result
+        assert "### Objective" in result
         assert "find data" in result
+        assert "### Current Progress" in result
         assert "status" in result
 
     def test_long_value_truncated(self) -> None:
         wm = WorkingMemory()
-        wm.set("big", "x" * 600)
+        long_text = "token " * 2000
+        wm.set("big", long_text)
         result = wm.to_prompt_string()
-        assert "..." in result
+        formatted = WorkingMemory._format_value(long_text)
+        assert formatted.endswith("...")
+        assert formatted in result
+        assert count_tokens(formatted) <= 160
+
+    def test_goal_auto_categorizes_under_objective(self) -> None:
+        wm = WorkingMemory()
+        wm.set("goal", "win the race")
+        result = wm.to_prompt_string()
+        assert "### Objective" in result
+        assert "**goal**:" in result
+        assert "win the race" in result
+
+    def test_steps_auto_categorizes_under_plan(self) -> None:
+        wm = WorkingMemory()
+        wm.set("steps", "step1, step2")
+        wm.set("plan", "master plan")
+        result = wm.to_prompt_string()
+        assert "### Plan" in result
+        assert "**steps**:" in result
+        assert "step1, step2" in result
+        assert "**plan**:" in result
+        assert "master plan" in result
+
+    def test_current_task_auto_categorizes_under_progress(self) -> None:
+        wm = WorkingMemory()
+        wm.set("current_task", "doing stuff")
+        result = wm.to_prompt_string()
+        assert "### Current Progress" in result
+        assert "**current_task**:" in result
+        assert "doing stuff" in result
+
+    def test_unknown_keys_go_to_additional_context(self) -> None:
+        wm = WorkingMemory()
+        wm.set("custom_key", "custom_value")
+        result = wm.to_prompt_string()
+        assert "### Additional Context" in result
+        assert "**custom_key**:" in result
+        assert "custom_value" in result
+
+    def test_set_with_category_override(self) -> None:
+        wm = WorkingMemory()
+        # "custom_key" would normally be uncategorized; override to plan
+        wm.set("custom_key", "my plan detail", category="plan")
+        result = wm.to_prompt_string()
+        assert "### Plan" in result
+        assert "**custom_key**:" in result
+        assert "my plan detail" in result
+        assert "### Additional Context" not in result
+
+    def test_history_under_key_observations(self) -> None:
+        wm = WorkingMemory()
+        wm._history.append(Message.user("saw something", metadata={"importance_score": 0.5}))
+        wm._history.append(Message.user("found a clue", metadata={"importance_score": 0.8}))
+        result = wm.to_prompt_string()
+        assert "### Key Observations" in result
+        assert "- saw something" in result
+        assert "- found a clue" in result
+
+    def test_category_ordering(self) -> None:
+        wm = WorkingMemory()
+        wm.set("errors", "oops")
+        wm.set("goal", "win")
+        wm.set("current_step", "step 3")
+        wm.set("plan", "do things")
+        result = wm.to_prompt_string()
+        # Enum order: OBJECTIVE, PLAN, PROGRESS, OBSERVATION, ERROR
+        obj_pos = result.index("### Objective")
+        plan_pos = result.index("### Plan")
+        prog_pos = result.index("### Current Progress")
+        err_pos = result.index("### Errors")
+        assert obj_pos < plan_pos < prog_pos < err_pos
 
 
 class TestWorkingMemoryBaseMemory:
@@ -122,7 +198,7 @@ class TestWorkingMemoryBaseMemory:
         msgs = await wm.get_context_messages()
         assert len(msgs) == 1
         assert msgs[0].role == Role.SYSTEM
-        assert "Working Memory" in msgs[0].content
+        assert "Plan" in msgs[0].content
 
     @pytest.mark.asyncio
     async def test_clear(self) -> None:
@@ -144,3 +220,64 @@ class TestWorkingMemoryBaseMemory:
         await wm.add("note")
         # size = scratchpad entries + history entries
         assert await wm.size() == 2
+
+
+class TestForgetTimeDecay:
+    """Tests for the time-decay + importance scoring forget() method."""
+
+    @pytest.mark.asyncio
+    async def test_recent_high_importance_kept(self) -> None:
+        wm = WorkingMemory()
+        await wm.add("important recent", metadata={"importance_score": 1.0})
+        removed = await wm.forget(threshold=0.3)
+        assert removed == 0
+        assert len(wm._history) == 1
+        assert wm._history[0].content == "important recent"
+
+    @pytest.mark.asyncio
+    async def test_old_low_importance_forgotten(self) -> None:
+        wm = WorkingMemory()
+        # Manually insert an old entry with low importance
+        old_time = datetime.now() - timedelta(hours=500)
+        wm._history.append(Message.user("stale note", metadata={"importance_score": 0.1}, created_at=old_time))
+        removed = await wm.forget(threshold=0.3)
+        assert removed == 1
+        assert len(wm._history) == 0
+
+    @pytest.mark.asyncio
+    async def test_scratchpad_unaffected_by_forget(self) -> None:
+        wm = WorkingMemory()
+        wm.set("plan", "step1")
+        wm.set("goal", "win")
+        # Add an old entry that will be forgotten
+        old_time = datetime.now() - timedelta(hours=500)
+        wm._history.append(Message.user("old note", metadata={"importance_score": 0.0}, created_at=old_time))
+        removed = await wm.forget(threshold=0.3)
+        assert removed == 1
+        # Scratchpad keys are always preserved
+        assert wm.get("plan") == "step1"
+        assert wm.get("goal") == "win"
+
+    @pytest.mark.asyncio
+    async def test_forget_empty_history(self) -> None:
+        wm = WorkingMemory()
+        removed = await wm.forget()
+        assert removed == 0
+
+    @pytest.mark.asyncio
+    async def test_mixed_entries(self) -> None:
+        wm = WorkingMemory()
+        # Recent high importance — kept
+        await wm.add("fresh", metadata={"importance_score": 0.9})
+        # Old low importance — forgotten
+        old_time = datetime.now() - timedelta(hours=500)
+        wm._history.append(Message.user("ancient", metadata={"importance_score": 0.1}, created_at=old_time))
+        # Recent default importance — kept
+        await wm.add("recent default")
+
+        removed = await wm.forget(threshold=0.3)
+        assert removed == 1
+        contents = [msg.content for msg in wm._history]
+        assert "fresh" in contents
+        assert "recent default" in contents
+        assert "ancient" not in contents

@@ -4,8 +4,9 @@ from __future__ import annotations
 import json
 
 from agent_harness.tool.decorator import tool
+from agent_harness.utils.token_counter import truncate_text_by_tokens
 
-_MAX_BODY_LEN = 5000
+_MAX_BODY_TOKENS = 15000
 
 
 @tool
@@ -49,8 +50,11 @@ async def http_request(
                 data=body or None,
             ) as resp:
                 resp_body = await resp.text()
-                if len(resp_body) > _MAX_BODY_LEN:
-                    resp_body = resp_body[:_MAX_BODY_LEN] + "\n... (truncated)"
+                resp_body = truncate_text_by_tokens(
+                    resp_body,
+                    max_tokens=_MAX_BODY_TOKENS,
+                    suffix="\n... (truncated)",
+                )
                 return f"Status: {resp.status}\n\n{resp_body}"
     except aiohttp.ClientError as exc:
         return f"HTTP error: {exc}"

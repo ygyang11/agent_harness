@@ -7,10 +7,13 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr, field_validator
+
+if TYPE_CHECKING:
+    from agent_harness.agent.hooks import DefaultHooks
 
 
 class LLMConfig(BaseModel):
@@ -25,6 +28,13 @@ class LLMConfig(BaseModel):
     timeout: float = 120.0
     max_retries: int = 3
     retry_delay: float = 1.0
+
+    @field_validator("api_key", "base_url", mode="before")
+    @classmethod
+    def _blank_to_none(cls, value: str | None) -> str | None:
+        if isinstance(value, str) and value.strip() == "":
+            return None
+        return value
 
     def model_post_init(self, __context: Any) -> None:
         # Auto-resolve API keys from environment if not set
@@ -65,6 +75,13 @@ class SearchConfig(BaseModel):
     tavily_api_key: str | None = None
     serpapi_api_key: str | None = None
 
+    @field_validator("tavily_api_key", "serpapi_api_key", mode="before")
+    @classmethod
+    def _blank_to_none(cls, value: str | None) -> str | None:
+        if isinstance(value, str) and value.strip() == "":
+            return None
+        return value
+
     def model_post_init(self, __context: Any) -> None:
         if self.tavily_api_key is None:
             self.tavily_api_key = os.environ.get("TAVILY_API_KEY")
@@ -90,6 +107,14 @@ class HarnessConfig(BaseModel):
     tracing: TracingConfig = Field(default_factory=TracingConfig)
     verbose: bool = False
 
+    _instance: ClassVar[HarnessConfig | None] = None
+    _runtime_hooks: DefaultHooks | None = PrivateAttr(default=None)
+
+    @classmethod
+    def get(cls) -> HarnessConfig:
+        """Return the active config, or a default instance."""
+        return cls._instance or cls()
+
     @classmethod
     def from_yaml(cls, path: str | Path) -> HarnessConfig:
         """Load configuration from a YAML file."""
@@ -98,7 +123,9 @@ class HarnessConfig(BaseModel):
             raise FileNotFoundError(f"Config file not found: {path}")
         with open(path) as f:
             data = yaml.safe_load(f) or {}
-        return cls.model_validate(data)
+        config = cls.model_validate(data)
+        cls._instance = config
+        return config
 
     @classmethod
     def from_env(cls) -> HarnessConfig:
@@ -136,11 +163,59 @@ class HarnessConfig(BaseModel):
 
         return cls.model_validate(data)
 
+    @classmethod
+    def load(
+        cls,
+        path: str | Path | None = None,
+        *,
+        env_override: bool = True,
+    ) -> HarnessConfig:
+        """Load from YAML and optionally override with environment variables."""
+        file_cfg = cls.from_yaml(path) if path is not None else cls()
+        if not env_override:
+            cls._instance = file_cfg
+            return file_cfg
+
+        env_cfg = cls.from_env()
+        merged = file_cfg.merge(env_cfg)
+        cls._instance = merged
+        return merged
+
     def merge(self, other: HarnessConfig) -> HarnessConfig:
         """Merge another config into this one. `other` values take precedence."""
         base = self.model_dump()
         override = other.model_dump(exclude_defaults=True)
         return HarnessConfig.model_validate(_deep_merge(base, override))
+
+    def get_runtime_hooks(self) -> DefaultHooks | None:
+        return self._runtime_hooks
+
+    def set_runtime_hooks(self, hooks: DefaultHooks) -> None:
+        self._runtime_hooks = hooks
+
+
+def resolve_llm_config(config: HarnessConfig | LLMConfig | None) -> LLMConfig:
+    if isinstance(config, HarnessConfig):
+        return config.llm
+    if isinstance(config, LLMConfig):
+        return config
+    return HarnessConfig.get().llm
+
+
+def resolve_tool_config(config: HarnessConfig | ToolConfig | None) -> ToolConfig:
+    if isinstance(config, HarnessConfig):
+        return config.tool
+    if isinstance(config, ToolConfig):
+        return config
+    return HarnessConfig.get().tool
+
+
+def resolve_search_config(config: HarnessConfig | SearchConfig | None) -> SearchConfig:
+    if isinstance(config, HarnessConfig):
+        return config.search
+    if isinstance(config, SearchConfig):
+        return config
+    return HarnessConfig.get().search
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:

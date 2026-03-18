@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Callable
+from typing import Callable
 
 from pydantic import BaseModel, Field
 
 from agent_harness.agent.base import BaseAgent, AgentResult
+from agent_harness.agent.hooks import DefaultHooks, resolve_hooks
+from agent_harness.core.config import HarnessConfig
 from agent_harness.core.errors import CyclicDependencyError, OrchestrationError
 
 logger = logging.getLogger(__name__)
@@ -16,9 +18,9 @@ logger = logging.getLogger(__name__)
 class DAGNode(BaseModel, arbitrary_types_allowed=True):
     """A node in the execution DAG."""
     id: str
-    agent: Any  # BaseAgent
+    agent: BaseAgent
     dependencies: list[str] = Field(default_factory=list)
-    input_transform: Any | None = None  # Callable[[dict[str, AgentResult]], str]
+    input_transform: Callable[[dict[str, AgentResult]], str] | None = None
 
 
 class DAGResult(BaseModel):
@@ -38,13 +40,21 @@ class DAGOrchestrator:
             DAGNode(id="search", agent=searcher),
             DAGNode(id="analyze", agent=analyzer, dependencies=["search"]),
             DAGNode(id="summarize", agent=summarizer, dependencies=["search"]),
-            DAGNode(id="report", agent=reporter, dependencies=["analyze", "summarize"]),
-        ])
+            DAGNode(id="report", agent=reporter, dependencies=["analyze", "summarize"])]
+            fail_fast=False)
         result = await dag.run("Research AI safety")
     """
 
-    def __init__(self, nodes: list[DAGNode]) -> None:
+    def __init__(
+        self,
+        nodes: list[DAGNode],
+        fail_fast: bool = False,
+        hooks: DefaultHooks | None = None,
+        config: HarnessConfig | None = None,
+    ) -> None:
         self.nodes = {n.id: n for n in nodes}
+        self._fail_fast = fail_fast
+        self.hooks = resolve_hooks(hooks, config)
         self._validate_dag()
 
     def _validate_dag(self) -> None:
@@ -70,14 +80,14 @@ class DAGOrchestrator:
         for nid in self.nodes:
             dfs(nid)
 
-    async def run(self, input: str, hooks: Any = None) -> DAGResult:
+    async def run(self, input: str) -> DAGResult:
         """Execute the DAG with maximum parallelism."""
         results: dict[str, AgentResult] = {}
         completed: set[str] = set()
         execution_order: list[list[str]] = []
 
-        if hasattr(hooks, "on_dag_start"):
-            await hooks.on_dag_start("dag")
+        if hasattr(self.hooks, "on_dag_start"):
+            await self.hooks.on_dag_start("dag")
 
         while len(completed) < len(self.nodes):
             # Find ready nodes (all deps completed)
@@ -95,8 +105,8 @@ class DAGOrchestrator:
 
             # Execute ready nodes in parallel
             async def run_node(node_id: str) -> tuple[str, AgentResult]:
-                if hasattr(hooks, "on_dag_node_start"):
-                    await hooks.on_dag_node_start(node_id)
+                if hasattr(self.hooks, "on_dag_node_start"):
+                    await self.hooks.on_dag_node_start(node_id)
                 node = self.nodes[node_id]
                 if node.input_transform:
                     node_input = node.input_transform(results)
@@ -107,8 +117,8 @@ class DAGOrchestrator:
                 else:
                     node_input = input
                 result = await node.agent.run(node_input)
-                if hasattr(hooks, "on_dag_node_end"):
-                    await hooks.on_dag_node_end(node_id)
+                if hasattr(self.hooks, "on_dag_node_end"):
+                    await self.hooks.on_dag_node_end(node_id)
                 return node_id, result
 
             batch_results = await asyncio.gather(
@@ -117,7 +127,11 @@ class DAGOrchestrator:
             )
 
             for nid, result_or_exc in zip(ready, batch_results):
-                if isinstance(result_or_exc, Exception):
+                if isinstance(result_or_exc, BaseException):
+                    if self._fail_fast:
+                        raise OrchestrationError(
+                            f"DAG node '{nid}' failed: {result_or_exc}"
+                        ) from result_or_exc
                     logger.warning("DAG node '%s' failed: %s", nid, result_or_exc)
                     results[nid] = AgentResult(
                         output=f"Error: {result_or_exc}", messages=[], steps=[],
@@ -127,7 +141,7 @@ class DAGOrchestrator:
                     results[nid] = result
                 completed.add(nid)
 
-        if hasattr(hooks, "on_dag_end"):
-            await hooks.on_dag_end("dag")
+        if hasattr(self.hooks, "on_dag_end"):
+            await self.hooks.on_dag_end("dag")
 
         return DAGResult(outputs=results, execution_order=execution_order)

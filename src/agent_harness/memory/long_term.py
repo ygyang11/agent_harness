@@ -1,136 +1,76 @@
-"""Long-term memory backed by vector store for semantic retrieval."""
+"""Long-term memory with TF-IDF-based semantic retrieval."""
 from __future__ import annotations
 
-import logging
 import math
-import uuid
 from datetime import datetime
-from typing import Any, Callable, Awaitable
+from typing import Any
 
 from agent_harness.core.message import Message
 from agent_harness.memory.base import BaseMemory, MemoryItem
-from agent_harness.memory.storage.base import BaseVectorStore, VectorDocument
-
-logger = logging.getLogger(__name__)
-
-# Type alias for embedding function
-EmbeddingFn = Callable[[str], Awaitable[list[float]]]
+from agent_harness.memory.retrieval import HybridRetriever
 
 
 class LongTermMemory(BaseMemory):
-    """Semantic retrieval memory backed by a vector store.
+    """Long-term memory with TF-IDF-based semantic retrieval.
 
-    Stores content with embeddings for similarity-based retrieval.
-    Ideal for research scenarios where large amounts of information
-    need to be stored and retrieved by relevance.
-
-    Requires an embedding function to be injected (e.g., OpenAI embeddings).
-
-    Example:
-        async def embed(text: str) -> list[float]:
-            response = await openai.embeddings.create(input=text, model="text-embedding-3-small")
-            return response.data[0].embedding
-
-        memory = LongTermMemory(store=NumpyVectorStore(), embedding_fn=embed)
-        await memory.add("AI safety is important", metadata={"source": "paper"})
-        results = await memory.query("safety research", top_k=3)
+    Stores messages and retrieves them using the shared HybridRetriever,
+    consistent with ShortTermMemory and WorkingMemory.
     """
 
-    def __init__(
-        self,
-        store: BaseVectorStore,
-        embedding_fn: EmbeddingFn,
-    ) -> None:
-        self._store = store
-        self._embed = embedding_fn
+    def __init__(self, max_documents: int = 10000) -> None:
+        self._messages: list[Message] = []
+        self._max_documents = max_documents
 
     async def add(self, content: str, metadata: dict[str, Any] | None = None) -> None:
-        """Add content to long-term memory with auto-generated embedding."""
-        doc_id = uuid.uuid4().hex
-        embedding = await self._embed(content)
-        meta = metadata or {}
-        if "created_at" not in meta:
-            meta["created_at"] = datetime.now().isoformat()
-        doc = VectorDocument(
-            id=doc_id,
-            content=content,
-            embedding=embedding,
-            metadata=meta,
-        )
-        await self._store.upsert([doc])
+        meta = dict(metadata) if metadata else {}
+        if "importance_score" not in meta:
+            meta["importance_score"] = 0.5
+        msg = Message.user(content, metadata=meta)
+        self._messages.append(msg)
+        if len(self._messages) > self._max_documents:
+            self._messages = self._messages[-self._max_documents:]
 
     async def add_message(self, message: Message) -> None:
-        """Add a message's content to long-term memory."""
         if message.content:
-            await self.add(
-                message.content,
-                metadata={"role": message.role.value},
-            )
+            self._messages.append(message)
 
     async def query(self, query: str, top_k: int = 5) -> list[MemoryItem]:
-        """Query long-term memory by semantic similarity."""
-        query_embedding = await self._embed(query)
-        results = await self._store.search(
-            query_embedding=query_embedding,
-            top_k=top_k,
-        )
-        return [
+        if not self._messages:
+            return []
+        items = [
             MemoryItem(
-                content=r.document.content,
-                metadata=r.document.metadata,
-                importance_score=r.score,
+                content=msg.content or "",
+                metadata={"role": msg.role.value},
+                importance_score=msg.metadata.get("importance_score", 0.5),
+                timestamp=msg.created_at,
             )
-            for r in results
+            for msg in self._messages
+            if msg.content
         ]
+        if not items:
+            return []
+        retriever = HybridRetriever()
+        return retriever.retrieve(query, items, top_k=top_k)
 
     async def get_context_messages(self) -> list[Message]:
-        """Long-term memory doesn't provide context messages directly.
-
-        Use query() to retrieve relevant content and inject manually.
-        Returns empty list.
-        """
         return []
 
     async def clear(self) -> None:
-        await self._store.clear()
+        self._messages.clear()
 
     async def forget(self, threshold: float = 0.3) -> int:
-        """Remove long-term memories with low weighted score.
-
-        Uses ``list_all()`` on the vector store to scan documents.
-        If the store does not support iteration, returns 0.
-        """
-        docs = await self._store.list_all()
-        if not docs:
-            logger.debug("LongTermMemory.forget: no docs to evaluate (threshold=%.2f)", threshold)
-            return 0
-
         now = datetime.now()
-        decay_rate = 0.01
-        ids_to_remove: list[str] = []
-
-        for doc in docs:
-            created_str = doc.metadata.get("created_at")
-            if created_str:
-                try:
-                    created = datetime.fromisoformat(created_str)
-                except (ValueError, TypeError):
-                    created = now
-            else:
-                created = now
-
-            hours = (now - created).total_seconds() / 3600
-            time_decay = math.exp(-decay_rate * hours)
-            importance = doc.metadata.get("importance_score", 0.5)
+        original = len(self._messages)
+        kept: list[Message] = []
+        for msg in self._messages:
+            hours = (now - msg.created_at).total_seconds() / 3600
+            time_decay = math.exp(-0.01 * hours)
+            importance = msg.metadata.get("importance_score", 0.5)
             weighted = time_decay * (0.8 + importance * 0.4)
-            if weighted < threshold:
-                ids_to_remove.append(doc.id)
-
-        if ids_to_remove:
-            await self._store.delete(ids_to_remove)
-            logger.info("LongTermMemory.forget: removed %d documents", len(ids_to_remove))
-
-        return len(ids_to_remove)
+            if weighted >= threshold:
+                kept.append(msg)
+        self._messages = kept
+        return original - len(kept)
 
     async def size(self) -> int:
-        return await self._store.count()
+        return len(self._messages)

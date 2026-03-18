@@ -6,10 +6,10 @@ import pytest
 from agent_harness.context.context import AgentContext
 from agent_harness.context.state import AgentState
 from agent_harness.context.variables import ContextVariables, Scope
-from agent_harness.core.config import HarnessConfig, MemoryConfig
+from agent_harness.core.config import HarnessConfig, LLMConfig, MemoryConfig
 from agent_harness.core.event import EventBus
 from agent_harness.memory.short_term import ShortTermMemory
-from agent_harness.memory.working import WorkingMemory
+from agent_harness.memory.working_term import WorkingMemory
 
 
 class TestAgentContextCreate: 
@@ -30,6 +30,22 @@ class TestAgentContextCreate:
         assert ctx.config.memory.short_term_max_messages == 10
         assert ctx.short_term_memory.max_messages == 10
 
+    def test_create_propagates_llm_model_to_short_term_memory(self) -> None:
+        cfg = HarnessConfig(llm=LLMConfig(model="gpt-5-mini"))
+        ctx = AgentContext.create(config=cfg)
+        assert ctx.short_term_memory.model == "gpt-5-mini"
+
+    def test_create_uses_active_harness_config_instance(self) -> None:
+        original_instance = HarnessConfig._instance
+        cfg = HarnessConfig(memory=MemoryConfig(short_term_max_messages=7))
+        HarnessConfig._instance = cfg
+        try:
+            ctx = AgentContext.create()
+            assert ctx.config is cfg
+            assert ctx.short_term_memory.max_messages == 7
+        finally:
+            HarnessConfig._instance = original_instance
+
     def test_create_with_explicit_components(self) -> None:
         bus = EventBus()
         stm = ShortTermMemory(max_messages=5)
@@ -48,6 +64,12 @@ class TestAgentContextFork:
         parent = AgentContext.create()
         child = parent.fork()
         assert child.config is parent.config
+
+    def test_fork_propagates_llm_model_to_child_short_term_memory(self) -> None:
+        cfg = HarnessConfig(llm=LLMConfig(model="claude-4-sonnet"))
+        parent = AgentContext.create(config=cfg)
+        child = parent.fork()
+        assert child.short_term_memory.model == "claude-4-sonnet"
 
     def test_fork_shares_long_term_memory(self) -> None:
         parent = AgentContext.create()
@@ -136,7 +158,7 @@ class TestBuildLLMMessages:
         # Working memory injected after system message
         assert len(msgs) == 3
         assert msgs[0].role.value == "system"
-        assert "Working Memory" in msgs[1].content
+        assert "goal" in msgs[1].content
         assert msgs[2].role.value == "user"
 
     @pytest.mark.asyncio

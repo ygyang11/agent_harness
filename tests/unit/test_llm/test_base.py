@@ -1,6 +1,8 @@
 """Tests for LLM base classes and MockLLM behavior."""
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, patch
+
 import pytest
 
 from agent_harness.core.message import Message
@@ -95,3 +97,56 @@ class TestMockLLMMultipleResponses:
         fallback = await llm.generate([Message.user("b")])
 
         assert fallback.message.content == "Default mock response"
+
+
+class TestWithRetryTransientErrors:
+    """_with_retry should handle ConnectionError and TimeoutError in addition to LLMRateLimitError."""
+
+    @pytest.mark.asyncio
+    async def test_retries_on_connection_error(self) -> None:
+        """_with_retry retries on ConnectionError then succeeds."""
+        llm = MockLLM()
+        call_count = 0
+
+        async def flaky_call() -> str:
+            nonlocal call_count
+            call_count += 1
+            if call_count < 2:
+                raise ConnectionError("connection reset")
+            return "ok"
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await llm._with_retry(flaky_call)
+
+        assert result == "ok"
+        assert call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_retries_on_timeout_error(self) -> None:
+        """_with_retry retries on TimeoutError then succeeds."""
+        llm = MockLLM()
+        call_count = 0
+
+        async def flaky_call() -> str:
+            nonlocal call_count
+            call_count += 1
+            if call_count < 2:
+                raise TimeoutError("timed out")
+            return "ok"
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await llm._with_retry(flaky_call)
+
+        assert result == "ok"
+        assert call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_does_not_retry_non_transient_error(self) -> None:
+        """_with_retry does not retry on ValueError."""
+        llm = MockLLM()
+
+        async def bad_call() -> str:
+            raise ValueError("not retryable")
+
+        with pytest.raises(ValueError, match="not retryable"):
+            await llm._with_retry(bad_call)

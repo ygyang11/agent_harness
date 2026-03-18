@@ -1,4 +1,4 @@
-"""Plan-and-Execute agent: generates a plan then executes step by step."""
+"""Plan-and-Execute agent: multi-agent orchestration for plan -> execute -> replan."""
 from __future__ import annotations
 
 import logging
@@ -7,57 +7,153 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from agent_harness.agent.base import BaseAgent, StepResult, AgentResult
+from agent_harness.context.state import AgentState
 from agent_harness.core.message import Message
+from agent_harness.llm.types import Usage
 from agent_harness.utils.json_utils import parse_json_lenient
+from agent_harness.utils.token_counter import truncate_text_by_tokens
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_PLANNER_SYSTEM_PROMPT = """You are a planning agent. You break down complex tasks into clear, actionable steps.
+_PLAN_RESULT_MAX_TOKENS = 26
+_PLAN_EVENT_OUTPUT_MAX_TOKENS = 64
 
-When given a task:
-1. First, create a plan as a JSON object with a goal and steps
-2. Then execute each step one at a time using available tools
-3. After each step, evaluate progress and adjust if needed
 
-When creating a plan, respond with ONLY a JSON object in this EXACT format:
-{
-    "goal": "The overall goal of the task",
-    "steps": [
-        {"id": "1", "description": "First step description", "status": "pending", "result": null},
-        {"id": "2", "description": "Second step description", "status": "pending", "result": null}
-    ]
+# ---------------------------------------------------------------------------
+# System prompts
+# ---------------------------------------------------------------------------
+
+PlanAndExecutePrompts: dict[str, str] = {
+    "planner": (
+        "You are a planning agent specialized in task decomposition and strategic planning.\n"
+        "\n"
+        "## Role\n"
+        "Analyze the user's request and break it down into a structured, actionable plan.\n"
+        "Think carefully about dependencies between steps and the optimal execution order.\n"
+        "\n"
+        "## Output Format\n"
+        "Respond with ONLY a valid JSON object. Do not include any text, markdown, or explanation\n"
+        "outside the JSON structure.\n"
+        "\n"
+        "Required schema:\n"
+        "{\n"
+        '    "goal": "A clear, refined statement of the overall objective",\n'
+        '    "steps": [\n'
+        '        {\n'
+        '            "id": "1",\n'
+        '            "description": "Clear description of what this step accomplishes"\n'
+        '        }\n'
+        "    ]\n"
+        "}\n"
+        "\n"
+        "## Planning Rules\n"
+        "1. Keep each step atomic — one clear action per step\n"
+        "2. Steps must be independently executable given prior step results\n"
+        "3. Order steps by dependency: prerequisites before dependents\n"
+        "4. Aim for 2-6 steps; avoid over-decomposition for simple tasks\n"
+        "5. Each step should produce a verifiable outcome\n"
+        "\n"
+        "## Constraints\n"
+        "- Output ONLY valid JSON — no markdown fences, no preamble, no commentary\n"
+        "- Every step MUST have 'id' and 'description' fields\n"
+        "- The 'id' field must be a unique string (e.g., '1', '2', '3')\n"
+        "- Do not reference tools or implementation details — focus on WHAT, not HOW\n"
+        "- If the task is trivial, a single-step plan is acceptable"
+    ),
+    "executor": (
+        "You are an execution agent responsible for completing a specific step of a plan.\n"
+        "\n"
+        "## Role\n"
+        "You receive a single step to execute along with context from previously completed steps.\n"
+        "Use the available tools to gather information, perform actions, and accomplish the step.\n"
+        "\n"
+        "## Execution Rules\n"
+        "1. Focus ONLY on the current step — do not attempt other steps\n"
+        "2. Use tools when you need external information or must perform actions\n"
+        "3. You may call multiple tools in sequence if the step requires it\n"
+        "4. Analyze tool results before deciding next actions\n"
+        "5. When the step is complete, provide a clear, concise summary of the result\n"
+        "\n"
+        "## Output Guidelines\n"
+        "- Your final response should summarize what was accomplished\n"
+        "- Include key data, findings, or outcomes from tool usage\n"
+        "- Report failures clearly if the step could not be completed\n"
+        "- Keep the result focused and actionable for subsequent steps\n"
+        "\n"
+        "## Constraints\n"
+        "- Do not attempt steps outside your current assignment\n"
+        "- Do not modify the plan — only execute the assigned step\n"
+        "- If a step cannot be completed with available tools, explain why\n"
+        "- Provide your result as plain text (not JSON)"
+    ),
+    "replanner": (
+        "You are a replanning agent that evaluates execution progress and decides the next action.\n"
+        "\n"
+        "## Role\n"
+        "After each step is executed, you receive the original goal, the current plan status,\n"
+        "and the result of the latest step. Your job is to evaluate whether the goal has been\n"
+        "achieved, whether the remaining plan is still valid, or whether replanning is needed.\n"
+        "\n"
+        "## Output Format\n"
+        "Respond with ONLY a valid JSON object in one of these three formats:\n"
+        "\n"
+        "### Goal Achieved — task is complete\n"
+        '{"goal_achieved": true, "final_answer": "Comprehensive answer addressing the original task"}\n'
+        "\n"
+        "### Continue — proceed with the next step as planned\n"
+        '{"goal_achieved": false, "should_replan": false}\n'
+        "\n"
+        "### Replan — modify the remaining steps\n"
+        "{\n"
+        '    "goal_achieved": false,\n'
+        '    "should_replan": true,\n'
+        '    "reason": "Explanation of why replanning is needed",\n'
+        '    "updated_steps": [\n'
+        '        {"id": "N", "description": "New or revised step"}\n'
+        "    ]\n"
+        "}\n"
+        "\n"
+        "## Evaluation Rules\n"
+        "1. Set goal_achieved=true ONLY when you have enough information for a complete,\n"
+        "   comprehensive answer to the original task\n"
+        "2. The final_answer must directly and fully address the original task\n"
+        "3. Use should_replan=true when step results reveal the plan is insufficient,\n"
+        "   incorrect, or needs adjustment\n"
+        "4. updated_steps replaces ALL remaining pending steps (completed steps are preserved)\n"
+        "5. If the step failed but remaining steps can still achieve the goal, continue\n"
+        "\n"
+        "## Constraints\n"
+        "- Output ONLY valid JSON — no markdown fences, no preamble, no commentary\n"
+        "- Do not add steps unnecessarily — only replan when genuinely needed\n"
+        "- The final_answer should be self-contained and comprehensive\n"
+        "- When replanning, ensure updated_steps are actionable and ordered correctly"
+    ),
 }
 
-Valid step status values: "pending", "in_progress", "done", "failed"
-- pending: step has not been started yet
-- in_progress: step is currently being executed
-- done: step completed successfully (result field contains the outcome)
-- failed: step failed (result field contains the error description)
 
-IMPORTANT:
-- Always respond with valid JSON when creating a plan
-- Each step must have "id", "description", "status", and "result" fields
-- Keep steps atomic and actionable
-- When executing a step, use available tools as needed and provide the result
-- When all steps are done, provide a comprehensive final answer"""
+# ---------------------------------------------------------------------------
+# Data models
+# ---------------------------------------------------------------------------
 
 
 class PlanStep(BaseModel):
     """A single step in the plan."""
+
     id: str
     description: str
-    status: str = "pending"  # pending | in_progress | done | failed
+    status: str = "pending"
     result: str | None = None
 
 
 class Plan(BaseModel):
     """A structured execution plan."""
+
     goal: str = ""
     steps: list[PlanStep] = Field(default_factory=list)
 
     @property
     def current_step(self) -> PlanStep | None:
-        """Get the next pending or in-progress step."""
+        """Return the next pending or in-progress step."""
         for step in self.steps:
             if step.status in ("pending", "in_progress"):
                 return step
@@ -65,222 +161,337 @@ class Plan(BaseModel):
 
     @property
     def is_complete(self) -> bool:
-        return all(s.status in ("done", "failed") for s in self.steps) and len(self.steps) > 0
+        """True when all steps are done or failed."""
+        return (
+            all(s.status in ("done", "failed") for s in self.steps)
+            and len(self.steps) > 0
+        )
 
     @property
     def progress_summary(self) -> str:
+        """Human-readable progress summary."""
         lines = [f"Goal: {self.goal}"]
         for s in self.steps:
-            marker = {"pending": "○", "in_progress": "◉", "done": "✓", "failed": "✗"}.get(s.status, "?")
-            result_str = f" → {s.result[:80]}..." if s.result and len(s.result) > 80 else (f" → {s.result}" if s.result else "")
+            marker = {
+                "pending": "○",
+                "in_progress": "◉",
+                "done": "✓",
+                "failed": "✗",
+            }.get(s.status, "?")
+            if s.result:
+                result_str = " -> " + truncate_text_by_tokens(
+                    s.result,
+                    max_tokens=_PLAN_RESULT_MAX_TOKENS,
+                    suffix="...",
+                )
+            else:
+                result_str = ""
             lines.append(f"  {marker} [{s.id}] {s.description}{result_str}")
         return "\n".join(lines)
 
 
-class PlanAgent(BaseAgent):
-    """Plan-and-Execute agent.
+class ReplanDecision(BaseModel):
+    """Structured decision from the replanner agent."""
 
-    Two-phase execution:
-    1. Planning: LLM generates a structured plan (JSON)
-    2. Execution: Steps are executed sequentially, each as a mini ReAct loop
+    goal_achieved: bool = False
+    should_replan: bool = False
+    reason: str = ""
+    updated_steps: list[PlanStep] | None = None
+    final_answer: str | None = None
 
-    Supports re-planning when execution reveals the plan needs adjustment.
 
-    Example:
-        agent = PlanAgent(
-            name="researcher",
-            llm=openai_provider,
-            tools=[search_tool, write_tool],
-        )
-        result = await agent.run("Research and summarize recent AI safety papers")
+# ---------------------------------------------------------------------------
+# Sub-agents
+# ---------------------------------------------------------------------------
+
+
+class PlannerAgent(BaseAgent):
+    """Generates a structured plan from the user's request.
+
+    Pure LLM reasoning — no tools. Produces a JSON plan matching the
+    Plan / PlanStep schema. Always completes in a single step.
+    """
+
+    def __init__(self, **kwargs: Any) -> None:
+        kwargs.setdefault("system_prompt", PlanAndExecutePrompts["planner"])
+        super().__init__(**kwargs)
+
+    async def step(self) -> StepResult:
+        response = await self.call_llm(tools=None)
+        return StepResult(response=response.message.content)
+
+
+class ExecutorAgent(BaseAgent):
+    """Executes a single plan step using available tools (ReAct-style).
+
+    Supports multi-step tool calling via the standard BaseAgent.run() loop.
+    Each call to step() either invokes tools (loop continues) or returns
+    a final text result (loop ends).
+    """
+
+    def __init__(self, **kwargs: Any) -> None:
+        kwargs.setdefault("system_prompt", PlanAndExecutePrompts["executor"])
+        super().__init__(**kwargs)
+
+    async def step(self) -> StepResult:
+        response = await self.call_llm()
+        if response.has_tool_calls:
+            tool_calls = response.message.tool_calls or []
+            results = await self.execute_tools(tool_calls)
+            return StepResult(
+                thought=response.message.content,
+                action=tool_calls,
+                observation=results,
+            )
+        return StepResult(response=response.message.content or "")
+
+
+class ReplannerAgent(BaseAgent):
+    """Evaluates step results and decides whether to continue, replan, or finish.
+
+    Pure LLM reasoning — no tools. Returns a JSON decision that the
+    orchestrator parses into a ReplanDecision. Single-step execution.
+    """
+
+    def __init__(self, **kwargs: Any) -> None:
+        kwargs.setdefault("system_prompt", PlanAndExecutePrompts["replanner"])
+        super().__init__(**kwargs)
+
+    async def step(self) -> StepResult:
+        response = await self.call_llm(tools=None)
+        return StepResult(response=response.message.content)
+
+
+# ---------------------------------------------------------------------------
+# Main orchestrator
+# ---------------------------------------------------------------------------
+
+
+class PlanAndExecuteAgent(BaseAgent):
+    """Multi-agent Plan-and-Execute orchestrator.
+
+    Coordinates three sub-agents (Planner, Executor, Replanner) through
+    a plan-execute-evaluate loop. Each sub-agent runs in a forked context
+    for memory isolation.
+
+    Workflow:
+        1. PlannerAgent generates a structured plan
+        2. ExecutorAgent executes steps one by one (with tool access)
+        3. ReplannerAgent evaluates results and adjusts the plan
+        4. Loop until goal achieved or max iterations reached
     """
 
     def __init__(
         self,
-        allow_replan: bool = True,
-        max_replans: int = 2,
+        max_replans: int = 3,
         system_prompt: str | None = None,
         **kwargs: Any,
     ) -> None:
-        if system_prompt is None:
-            system_prompt = DEFAULT_PLANNER_SYSTEM_PROMPT
-        super().__init__(system_prompt=system_prompt, **kwargs)
-        self.allow_replan = allow_replan
+        super().__init__(system_prompt=system_prompt or "", **kwargs)
         self.max_replans = max_replans
-        self._plan: Plan | None = None
-        self._phase: str = "planning"  # "planning" | "executing" | "synthesizing"
-        self._replan_count: int = 0
-
-    async def run(self, input: str | Message) -> AgentResult:
-        """Reset planning state before each run."""
-        self._plan = None
-        self._phase = "planning"
-        self._replan_count = 0
-        return await super().run(input)
 
     async def step(self) -> StepResult:
-        """Execute one step of planning or execution."""
-        if self._phase == "planning":
-            return await self._plan_step()
-        elif self._phase == "executing":
-            return await self._execute_step()
-        else:  # synthesizing
-            return await self._synthesize_step()
+        """Not used — run() is overridden."""
+        return StepResult()
 
-    async def _plan_step(self) -> StepResult:
-        """Generate the execution plan."""
-        response = await self.call_llm(tools=None)
-        content = response.message.content or ""
+    async def run(self, input: str | Message) -> AgentResult:
+        if self.context.state.is_terminal:
+            self.context.state.reset()
 
-        try:
-            plan_data = parse_json_lenient(content)
-            if isinstance(plan_data, dict):
-                self._plan = Plan(
-                    goal=plan_data.get("goal", ""),
-                    steps=[PlanStep(**s) for s in plan_data.get("steps", [])],
-                )
-            elif isinstance(plan_data, list):
-                self._plan = Plan(
-                    goal="Execute task",
-                    steps=[PlanStep(**s) if isinstance(s, dict) else PlanStep(id=str(i), description=str(s)) for i, s in enumerate(plan_data)],
-                )
-            else:
-                # LLM didn't return valid plan JSON - treat as direct answer
-                return StepResult(response=content)
+        input_text = input if isinstance(input, str) else (input.content or "")
 
-            logger.info("PlanAgent '%s' created plan:\n%s", self.name, self._plan.progress_summary)
+        self.context.state.transition(AgentState.THINKING)
+        await self.hooks.on_run_start(self.name, input_text)
+        await self.emit("agent.run.start", agent=self.name, input=input_text)
 
-            # Store plan in working memory
-            self.context.working_memory.set("plan", self._plan.progress_summary)
-            self._phase = "executing"
-
-            return StepResult(thought=f"Created plan with {len(self._plan.steps)} steps")
-
-        except (ValueError, TypeError) as e:
-            logger.warning("Failed to parse plan from LLM output: %s", e)
-            # If the LLM just answered directly without planning
-            return StepResult(response=content)
-
-    async def _execute_step(self) -> StepResult:
-        """Execute the current plan step."""
-        assert self._plan is not None
-
-        current = self._plan.current_step
-        if current is None:
-            self._phase = "synthesizing"
-            return await self._synthesize_step()
-
-        current.status = "in_progress"
-        self.context.working_memory.set("plan", self._plan.progress_summary)
-        self.context.working_memory.set("current_step", current.description)
+        total_usage = Usage()
+        steps: list[StepResult] = []
 
         try:
-            # Ask LLM to execute the current step
-            exec_msg = Message.user(
-                f"Execute this step of the plan:\n"
-                f"Step [{current.id}]: {current.description}\n\n"
-                f"Current plan progress:\n{self._plan.progress_summary}\n\n"
-                f"Use tools if needed. When done, provide the result for this step."
+            planner = PlannerAgent(
+                name=f"{self.name}.planner",
+                llm=self.llm,
+                tools=[],
+                context=self.context.fork("planner"),
+                hooks=self.hooks,
+                max_steps=1,
             )
-            await self.context.short_term_memory.add_message(exec_msg)
+            executor = ExecutorAgent(
+                name=f"{self.name}.executor",
+                llm=self.llm,
+                tools=self.tools,
+                context=self.context.fork("executor"),
+                hooks=self.hooks,
+                max_steps=self.max_steps,
+            )
+            replanner = ReplannerAgent(
+                name=f"{self.name}.replanner",
+                llm=self.llm,
+                tools=[],
+                context=self.context.fork("replanner"),
+                hooks=self.hooks,
+                max_steps=1,
+            )
 
-            response = await self.call_llm()
+            # Planning phase
+            plan_result = await planner.run(input_text)
+            total_usage = total_usage + plan_result.usage
+            plan = self._parse_plan(plan_result.output, input_text)
 
-            # Handle tool calls (ReAct-style within the step)
-            if response.has_tool_calls and response.message.tool_calls:
-                results = await self.execute_tools(response.message.tool_calls)
-                current.status = "in_progress"  # still executing
-                return StepResult(
-                    thought=f"Executing step [{current.id}]: {current.description}",
-                    action=response.message.tool_calls,
-                    observation=results,
+            await self.emit(
+                "agent.plan.created",
+                agent=self.name,
+                plan=plan.progress_summary,
+            )
+
+            # Execute-Evaluate loop
+            final_output = ""
+            iteration = 0
+
+            while iteration < self.max_steps:
+                iteration += 1
+
+                if plan.is_complete:
+                    break
+
+                current = plan.current_step
+                if current is None:
+                    break
+
+                current.status = "in_progress"
+                self.context.state.transition(AgentState.ACTING)
+
+                executor.context.working_memory.set("plan", plan.progress_summary)
+                executor.context.working_memory.set(
+                    "current_step", current.description
                 )
+
+                exec_result = await executor.run(current.description)
+                total_usage = total_usage + exec_result.usage
+
+                current.status = "done"
+                current.result = exec_result.output
+
+                steps.append(
+                    StepResult(thought=f"Executed step [{current.id}]")
+                )
+
+                self.context.state.transition(AgentState.OBSERVING)
+                self.context.state.transition(AgentState.THINKING)
+
+                replanner.context.working_memory.set("goal", plan.goal)
+                replanner.context.working_memory.set(
+                    "plan", plan.progress_summary
+                )
+                replanner.context.working_memory.set(
+                    "current_step",
+                    f"Step [{current.id}] result: {current.result}",
+                )
+
+                replan_result = await replanner.run(input_text)
+                total_usage = total_usage + replan_result.usage
+
+                decision = self._parse_replan_decision(replan_result.output)
+                await self.emit("agent.replan.decision", agent=self.name)
+
+                if decision.goal_achieved:
+                    final_output = decision.final_answer or exec_result.output
+                    break
+
+                if decision.should_replan and decision.updated_steps:
+                    kept = [
+                        s
+                        for s in plan.steps
+                        if s.status in ("done", "failed")
+                    ]
+                    plan.steps = kept + decision.updated_steps
+
+            else:
+                final_output = (
+                    f"Max iterations reached ({self.max_steps}). "
+                    f"Partial result: {plan.progress_summary}"
+                )
+
+            if not final_output:
+                final_output = plan.progress_summary
+
+            self.context.state.transition(AgentState.FINISHED)
+            messages = await self.context.short_term_memory.get_context_messages()
+
+            result = AgentResult(
+                output=final_output,
+                messages=messages,
+                steps=steps,
+                usage=total_usage,
+            )
+
+            await self.hooks.on_run_end(self.name, final_output)
+            await self.emit(
+                "agent.run.end",
+                agent=self.name,
+                output=truncate_text_by_tokens(
+                    final_output,
+                    max_tokens=_PLAN_EVENT_OUTPUT_MAX_TOKENS,
+                    suffix="",
+                ),
+            )
+            return result
 
         except Exception as e:
-            logger.warning("PlanAgent step [%s] failed with error: %s", current.id, e)
-            return await self._handle_step_failure(current, str(e))
+            await self.hooks.on_error(self.name, e)
+            await self.emit(
+                "agent.run.error", agent=self.name, error=str(e)
+            )
+            if not self.context.state.is_terminal:
+                self.context.state.transition(AgentState.ERROR)
+            raise
 
-        # Step completed
-        current.status = "done"
-        current.result = response.message.content or "Done"
-        self.context.working_memory.set("plan", self._plan.progress_summary)
-
-        logger.info("PlanAgent step [%s] done: %s", current.id, current.result[:100] if current.result else "")
-
-        # Check if plan is complete
-        if self._plan.is_complete:
-            self._phase = "synthesizing"
-
-        return StepResult(
-            thought=f"Completed step [{current.id}]",
-        )
-
-    async def _handle_step_failure(self, step: PlanStep, error_msg: str) -> StepResult:
-        """Handle a failed step — attempt replan if allowed."""
-        step.status = "failed"
-        step.result = error_msg
-        self.context.working_memory.set("plan", self._plan.progress_summary)
-
-        if self.allow_replan and self._replan_count < self.max_replans:
-            logger.info("PlanAgent step [%s] failed, attempting replan (%d/%d)",
-                        step.id, self._replan_count + 1, self.max_replans)
-            return await self._do_replan()
-
-        if self._plan.is_complete:
-            self._phase = "synthesizing"
-
-        return StepResult(thought=f"Step [{step.id}] failed: {error_msg}")
-
-    async def _do_replan(self) -> StepResult:
-        """Request LLM to update the remaining plan steps."""
-        assert self._plan is not None
-        self._replan_count += 1
-
-        remaining = [s for s in self._plan.steps if s.status in ("pending",)]
-        replan_msg = Message.user(
-            f"The current plan needs adjustment. Here is the progress so far:\n\n"
-            f"{self._plan.progress_summary}\n\n"
-            f"Some steps have failed or produced unexpected results. "
-            f"Please provide an updated plan for the REMAINING work only. "
-            f"Keep completed steps as-is and revise or replace the {len(remaining)} "
-            f"pending steps.\n\n"
-            f"Respond with a JSON object in this format:\n"
-            f'{{"steps": [{{"id": "...", "description": "...", "status": "pending"}}]}}'
-        )
-        await self.context.short_term_memory.add_message(replan_msg)
-
-        response = await self.call_llm(tools=None)
-        content = response.message.content or ""
-
+    @staticmethod
+    def _parse_plan(content: str, fallback_goal: str) -> Plan:
+        """Parse planner output into a Plan object, with fallback."""
         try:
-            replan_data = parse_json_lenient(content)
-            if isinstance(replan_data, dict) and "steps" in replan_data:
-                new_steps = [PlanStep(**s) for s in replan_data["steps"]]
-                # Replace remaining pending steps with new ones
-                kept = [s for s in self._plan.steps if s.status in ("done", "failed", "in_progress")]
-                self._plan.steps = kept + new_steps
-                self.context.working_memory.set("plan", self._plan.progress_summary)
-                logger.info("PlanAgent replanned: %d new steps", len(new_steps))
-                return StepResult(thought=f"Replanned with {len(new_steps)} new steps")
-        except (ValueError, TypeError) as e:
-            logger.warning("Failed to parse replan from LLM output: %s", e)
-
-        return StepResult(thought="Replan attempted but could not parse new plan")
-
-    async def _synthesize_step(self) -> StepResult:
-        """Synthesize final answer from all step results."""
-        assert self._plan is not None
-
-        synthesis_msg = Message.user(
-            f"All steps of the plan are now complete.\n\n"
-            f"Plan summary:\n{self._plan.progress_summary}\n\n"
-            f"Provide a comprehensive final answer that synthesizes all the results."
+            data = parse_json_lenient(content)
+            if isinstance(data, dict):
+                raw_steps = data.get("steps", [])
+                parsed_steps = [
+                    PlanStep(**s) if isinstance(s, dict)
+                    else PlanStep(id=str(i), description=str(s))
+                    for i, s in enumerate(raw_steps)
+                ]
+                return Plan(
+                    goal=data.get("goal", fallback_goal), steps=parsed_steps
+                )
+        except (ValueError, TypeError):
+            pass
+        return Plan(
+            goal=fallback_goal,
+            steps=[PlanStep(id="1", description=fallback_goal)],
         )
-        await self.context.short_term_memory.add_message(synthesis_msg)
 
-        response = await self.call_llm(tools=None)
+    @staticmethod
+    def _parse_replan_decision(content: str) -> ReplanDecision:
+        """Parse replanner output into a ReplanDecision."""
+        try:
+            data = parse_json_lenient(content)
+            if isinstance(data, dict):
+                updated = None
+                if data.get("updated_steps"):
+                    updated = [
+                        PlanStep(**s) if isinstance(s, dict)
+                        else PlanStep(id=str(i), description=str(s))
+                        for i, s in enumerate(data["updated_steps"])
+                    ]
+                return ReplanDecision(
+                    goal_achieved=data.get("goal_achieved", False),
+                    should_replan=data.get("should_replan", False),
+                    reason=data.get("reason", ""),
+                    updated_steps=updated,
+                    final_answer=data.get("final_answer"),
+                )
+        except (ValueError, TypeError):
+            pass
+        return ReplanDecision()
 
-        return StepResult(
-            thought="Synthesizing final answer",
-            response=response.message.content or "",
-        )
+
+# Backward compatibility alias
+PlanAgent = PlanAndExecuteAgent

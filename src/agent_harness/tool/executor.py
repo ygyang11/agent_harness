@@ -6,7 +6,7 @@ import logging
 import traceback
 from typing import Any
 
-from agent_harness.core.config import ToolConfig
+from agent_harness.core.config import HarnessConfig, ToolConfig, resolve_tool_config
 from agent_harness.core.errors import ToolError, ToolNotFoundError, ToolTimeoutError, ToolValidationError
 from agent_harness.core.event import EventEmitter
 from agent_harness.core.message import ToolCall, ToolResult
@@ -28,10 +28,10 @@ class ToolExecutor(EventEmitter):
     def __init__(
         self,
         registry: ToolRegistry,
-        config: ToolConfig | None = None,
+        config: HarnessConfig | ToolConfig | None = None,
     ) -> None:
         self.registry = registry
-        self.config = config or ToolConfig()
+        self.config = resolve_tool_config(config)
         self._semaphore = asyncio.Semaphore(self.config.max_concurrency)
 
     async def execute(

@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from agent_harness.core.config import ToolConfig
+from agent_harness.core.config import HarnessConfig, ToolConfig
 from agent_harness.core.message import ToolCall
 from agent_harness.tool.base import BaseTool, ToolSchema
 from agent_harness.tool.executor import ToolExecutor
@@ -63,6 +63,19 @@ class TestToolExecutorSuccess:
         executor = _make_executor(mock)
         tc = ToolCall(name="mock_tool", arguments={})
         result = await executor.execute(tc)
+        assert result.content == "ok"
+
+    @pytest.mark.asyncio
+    async def test_accepts_harness_config(self) -> None:
+        mock = MockTool(response="ok")
+        cfg = HarnessConfig(tool=ToolConfig(max_concurrency=2, default_timeout=0.2))
+        executor = _make_executor(mock, config=cfg)
+
+        tc = ToolCall(name="mock_tool", arguments={})
+        result = await executor.execute(tc)
+
+        assert executor.config.max_concurrency == 2
+        assert executor.config.default_timeout == 0.2
         assert result.content == "ok"
 
 

@@ -1,5 +1,5 @@
 """Agent Harness: A complete, extensible agent framework."""
-from agent_harness.logging_config import setup_logging
+from agent_harness.utils.logging_config import setup_logging
 
 # Auto-configure logging on import
 setup_logging()
@@ -13,7 +13,7 @@ from agent_harness.tool.base import BaseTool, ToolSchema
 from agent_harness.tool.decorator import tool
 from agent_harness.agent.base import BaseAgent, AgentResult
 from agent_harness.agent.react import ReActAgent
-from agent_harness.agent.planner import PlanAgent
+from agent_harness.agent.planner import PlanAgent, PlanAndExecuteAgent
 from agent_harness.agent.conversational import ConversationalAgent
 from agent_harness.context.context import AgentContext
 
@@ -47,6 +47,7 @@ __all__ = [
     "AgentResult",
     "ReActAgent",
     "PlanAgent",
+    "PlanAndExecuteAgent",
     "ConversationalAgent",
     # Context
     "AgentContext",

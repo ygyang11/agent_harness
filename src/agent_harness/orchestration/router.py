@@ -4,26 +4,74 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from typing import Any, Callable, TYPE_CHECKING
+from typing import Callable, TYPE_CHECKING
 
 from pydantic import BaseModel
 
 from agent_harness.agent.base import BaseAgent, AgentResult
+from agent_harness.agent.hooks import DefaultHooks, resolve_hooks
+from agent_harness.core.config import HarnessConfig
+from agent_harness.core.message import Message
+from agent_harness.utils.json_utils import parse_json_lenient
 
 if TYPE_CHECKING:
     from agent_harness.llm.base import BaseLLM
 
 logger = logging.getLogger(__name__)
 
+ROUTER_PROMPTS: dict[str, str] = {
+    "route.select": (
+        "## Role\n"
+        "You are a high-precision routing coordinator for a multi-agent system.\n\n"
+        "## Inputs\n"
+        "Available agents:\n"
+        "{route_descriptions}\n\n"
+        "User request:\n"
+        "{user_request}\n\n"
+        "## Objectives\n"
+        "- Select the most appropriate agent set for this request.\n"
+        "- Maximize relevance while minimizing unnecessary parallel dispatch.\n"
+        "- Avoid selecting agents that add no clear value.\n\n"
+        "## Rules\n"
+        "- Choose agent names exactly as listed in available agents.\n"
+        "- Select one agent when one clearly dominates.\n"
+        "- Select multiple agents only when complementary expertise is required.\n"
+        "- If none are suitable, return an empty list.\n"
+        "- Do not include explanations or extra keys.\n\n"
+        "## Output Format\n"
+        "Return ONLY JSON:\n"
+        "{{\"agents\": [\"agent_name_1\", \"agent_name_2\"]}}"
+    ),
+    "route.synthesize": (
+        "## Role\n"
+        "You are a synthesis coordinator combining multiple agent outputs.\n\n"
+        "## Inputs\n"
+        "Original user request:\n"
+        "{user_request}\n\n"
+        "Agent outputs:\n"
+        "{agent_outputs}\n\n"
+        "## Objectives\n"
+        "- Produce one coherent, decision-ready response.\n"
+        "- Preserve high-value insights and remove redundancy.\n"
+        "- Resolve conflicts with explicit, practical reasoning.\n\n"
+        "## Rules\n"
+        "- Prioritize correctness, completeness, and actionability.\n"
+        "- Keep the final answer concise but sufficiently detailed.\n"
+        "- Avoid mentioning internal routing mechanics.\n\n"
+        "## Output Format\n"
+        "Return a single final answer in plain text."
+    ),
+}
+
 
 class Route(BaseModel, arbitrary_types_allowed=True):
     """A routing rule."""
-    agent: Any  # BaseAgent
+    agent: BaseAgent
     name: str = ""
-    condition: Any  # Callable[[str], bool] | str (regex pattern)
+    condition: Callable[[str], bool] | str
     description: str = ""
 
-    def model_post_init(self, __context: Any) -> None:
+    def model_post_init(self, __context: object) -> None:
         if not self.name:
             self.name = getattr(self.agent, 'name', 'unnamed')
 
@@ -55,66 +103,62 @@ class AgentRouter:
         fallback: BaseAgent | None = None,
         llm: BaseLLM | None = None,
         llm_first: bool = False,
+        hooks: DefaultHooks | None = None,
+        config: HarnessConfig | None = None,
     ) -> None:
         self.routes = routes
         self.fallback = fallback
         self.llm = llm
         self.llm_first = llm_first
+        self.hooks = resolve_hooks(hooks, config)
 
     async def run(self, input: str) -> AgentResult:
         """Route the input to the matching agent."""
         if self.llm_first and self.llm:
             # LLM routing first
-            llm_result = await self._llm_route(input)
-            if llm_result is not None:
-                return llm_result
+            routes = await self._llm_select_routes(input)
+            if routes:
+                return await self._execute_routes(input, routes)
 
             # Fall back to rule matching
             for route in self.routes:
                 if self._matches(route, input):
                     logger.info("Router: matched route '%s' (rule fallback)", route.name)
-                    return await route.agent.run(input)
+                    return await self._run_agent(route.agent, input)
         else:
             # Rule matching first
             for route in self.routes:
                 if self._matches(route, input):
                     logger.info("Router: matched route '%s'", route.name)
-                    return await route.agent.run(input)
+                    return await self._run_agent(route.agent, input)
 
             # LLM routing fallback
             if self.llm:
-                llm_result = await self._llm_route(input)
-                if llm_result is not None:
-                    return llm_result
+                routes = await self._llm_select_routes(input)
+                if routes:
+                    return await self._execute_routes(input, routes)
 
         if self.fallback:
             logger.info("Router: no match, using fallback")
-            return await self.fallback.run(input)
+            return await self._run_agent(self.fallback, input)
 
         from agent_harness.core.errors import OrchestrationError
         raise OrchestrationError(
             f"No route matched and no fallback configured. Input: {input[:100]}"
         )
 
-    async def _llm_route(self, input: str) -> AgentResult | None:
-        """Use LLM to select the best route(s)."""
+    async def _llm_select_routes(self, input: str) -> list[Route]:
+        """Use LLM to select the best route(s). Returns matched Route objects."""
         assert self.llm is not None
-
-        from agent_harness.core.message import Message  # noqa: PLC0415
-        from agent_harness.utils.json_utils import parse_json_lenient  # noqa: PLC0415
 
         route_descriptions = "\n".join(
             f"- {r.name}: {r.description}" if r.description else f"- {r.name}"
             for r in self.routes
         )
 
-        prompt = (
-            f"You are a routing assistant. Given a user request and a list of available agents, "
-            f"select the most appropriate agent(s) to handle the request.\n\n"
-            f"Available agents:\n{route_descriptions}\n\n"
-            f"User request: {input}\n\n"
-            f'Respond with a JSON object: {{"agents": ["agent_name1", "agent_name2"]}}\n'
-            f"Select one or more agents. If none is suitable, respond with an empty list."
+        prompt = ROUTER_PROMPTS["route.select"].format(
+            route_descriptions=route_descriptions,
+            user_request=input,
         )
 
         try:
@@ -130,63 +174,68 @@ class AgentRouter:
             elif isinstance(data, list):
                 agent_names = data
             else:
-                return None
+                return []
 
             if not agent_names:
-                return None
+                return []
 
             # Map names to routes
             route_map = {r.name: r for r in self.routes}
             matched_routes = [route_map[name] for name in agent_names if name in route_map]
 
-            if not matched_routes:
-                return None
-
-            if len(matched_routes) == 1:
-                logger.info("Router: LLM selected route '%s'", matched_routes[0].name)
-                return await matched_routes[0].agent.run(input)
-
-            # Multiple agents — run in parallel and synthesize
-            logger.info("Router: LLM selected %d routes, running in parallel", len(matched_routes))
-            tasks = [r.agent.run(input) for r in matched_routes]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-
-            # Collect successful results
-            outputs: list[str] = []
-            first_result: AgentResult | None = None
-            for route, result in zip(matched_routes, results):
-                if isinstance(result, Exception):
-                    logger.warning("Router: agent '%s' failed: %s", route.name, result)
-                    continue
-                outputs.append(f"[{route.name}]: {result.output}")
-                if first_result is None:
-                    first_result = result
-
-            if not outputs:
-                return None
-
-            if len(outputs) == 1 and first_result is not None:
-                return first_result
-
-            # Synthesize multiple outputs
-            synthesis_prompt = (
-                f"Multiple agents provided answers to the request: {input}\n\n"
-                + "\n\n".join(outputs) +
-                "\n\nSynthesize these into a single comprehensive answer."
-            )
-            synthesis_response = await self.llm.generate(
-                [Message.user(synthesis_prompt)], tools=None,
-            )
-            return AgentResult(
-                output=synthesis_response.message.content or outputs[0],
-                messages=[],
-                steps=[],
-                usage=synthesis_response.usage,
-            )
+            return matched_routes
 
         except Exception as e:
-            logger.warning("Router: LLM routing failed: %s", e)
-            return None
+            logger.warning("Router: LLM route selection failed: %s", e)
+            return []
+
+    async def _execute_routes(self, input: str, routes: list[Route]) -> AgentResult:
+        """Execute the selected agents and synthesize results."""
+        if len(routes) == 1:
+            logger.info("Router: LLM selected route '%s'", routes[0].name)
+            return await self._run_agent(routes[0].agent, input)
+
+        # Multiple agents — run in parallel and synthesize
+        logger.info("Router: LLM selected %d routes, running in parallel", len(routes))
+        tasks = [self._run_agent(r.agent, input) for r in routes]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Collect successful results
+        outputs: list[str] = []
+        first_result: AgentResult | None = None
+        for route, result in zip(routes, results):
+            if isinstance(result, BaseException):
+                logger.warning("Router: agent '%s' failed: %s", route.name, result)
+                continue
+            outputs.append(f"[{route.name}]: {result.output}")
+            if first_result is None:
+                first_result = result
+
+        if not outputs:
+            return AgentResult(output="All routes failed", messages=[], steps=[])
+
+        if len(outputs) == 1 and first_result is not None:
+            return first_result
+
+        assert self.llm is not None
+        synthesis_prompt = ROUTER_PROMPTS["route.synthesize"].format(
+            user_request=input,
+            agent_outputs="\n\n".join(outputs),
+        )
+        synthesis_response = await self.llm.generate(
+            [Message.user(synthesis_prompt)], tools=None,
+        )
+        return AgentResult(
+            output=synthesis_response.message.content or outputs[0],
+            messages=[],
+            steps=[],
+            usage=synthesis_response.usage,
+        )
+
+    @staticmethod
+    async def _run_agent(agent: BaseAgent, input: str) -> AgentResult:
+        """Run an agent."""
+        return await agent.run(input)
 
     @staticmethod
     def _matches(route: Route, input: str) -> bool:

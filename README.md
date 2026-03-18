@@ -95,7 +95,7 @@ pip install -e ".[dev]"
 ```python
 import asyncio
 from agent_harness import ReActAgent, tool, HarnessConfig
-from agent_harness.llm import OpenAIProvider
+from agent_harness.llm import LLM
 
 @tool
 async def search_web(query: str) -> str:
@@ -103,9 +103,8 @@ async def search_web(query: str) -> str:
     return f"Top result for '{query}': Python is a versatile programming language."
 
 async def main():
-    config = HarnessConfig.from_env()
-    llm = OpenAIProvider(config.llm)
-    agent = ReActAgent(name="researcher", llm=llm, tools=[search_web])
+    config = HarnessConfig.load("config.yaml")
+    agent = ReActAgent(name="researcher", llm=LLM(config), tools=[search_web], config=config)
 
     result = await agent.run("What is Python?")
     print(result.output)
@@ -167,14 +166,11 @@ Both sync and async functions are supported. Parameters support `str`, `int`, `f
 Swap providers without changing agent code:
 
 ```python
-from agent_harness.llm import OpenAIProvider, AnthropicProvider
-from agent_harness.core import LLMConfig
+from agent_harness import HarnessConfig
+from agent_harness.llm import LLM
 
-# OpenAI
-openai_llm = OpenAIProvider(LLMConfig(model="gpt-5.2-2025-12-11", temperature=0.7))
-
-# Anthropic
-anthropic_llm = AnthropicProvider(LLMConfig(provider="anthropic", model="claude-opus-4-5-20251101"))
+config = HarnessConfig.load("config.yaml")
+llm = LLM(config)  # provider auto-resolved from config.llm.provider
 ```
 
 Add resilience with retry and fallback:
@@ -260,7 +256,6 @@ router = AgentRouter(
 team = AgentTeam(
     agents=[researcher, analyst, writer],
     mode="supervisor",
-    supervisor=manager,
 )
 ```
 
@@ -335,7 +330,7 @@ verbose: false
 Load it in code:
 
 ```python
-config = HarnessConfig.from_yaml("config.yaml")
+config = HarnessConfig.load("config.yaml")
 ```
 
 ### Environment Variables

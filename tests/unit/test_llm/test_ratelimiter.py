@@ -5,7 +5,7 @@ import asyncio
 import time
 import pytest
 
-from agent_harness.llm.retry import RateLimiter
+from agent_harness.llm.base import RateLimiter
 
 
 class TestRateLimiterLockFix:

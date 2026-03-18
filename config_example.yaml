@@ -16,7 +16,6 @@ llm:
                                 # Examples:
                                 #   OpenAI-compatible: "https://api.openai.com/v1"
                                 #   Azure OpenAI:     "https://<resource>.openai.azure.com/"
-                                #   Local model:      "http://localhost:8000/v1"
   timeout: 120.0                # Request timeout in seconds
   max_retries: 5                # Max retry attempts for rate-limit errors
   retry_delay: 1.0              # Initial retry delay in seconds (exponential backoff)

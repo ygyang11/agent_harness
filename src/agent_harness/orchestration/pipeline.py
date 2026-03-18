@@ -2,23 +2,25 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable
+from typing import Callable
 
 from pydantic import BaseModel, Field
 
+from agent_harness.agent.hooks import DefaultHooks, resolve_hooks
 from agent_harness.agent.base import BaseAgent, AgentResult
+from agent_harness.core.config import HarnessConfig
 
 logger = logging.getLogger(__name__)
 
 
 class PipelineStep(BaseModel, arbitrary_types_allowed=True):
     """A single step in a pipeline."""
-    agent: Any  # BaseAgent (pydantic can't validate ABC)
+    agent: BaseAgent
     name: str = ""
-    condition: Any | None = None  # Callable[[str], bool]
-    transform: Any | None = None  # Callable[[str], str] input transform
+    condition: Callable[[str], bool] | None = None
+    transform: Callable[[str], str] | None = None
 
-    def model_post_init(self, __context: Any) -> None:
+    def model_post_init(self, __context: object) -> None:
         if not self.name:
             self.name = getattr(self.agent, 'name', 'unnamed')
 
@@ -39,21 +41,26 @@ class Pipeline:
     Example:
         pipeline = Pipeline(steps=[
             PipelineStep(agent=researcher),
-            PipelineStep(agent=writer, transform=lambda x: f"Write article based on: {x}"),
-        ])
+            PipelineStep(agent=writer, transform=lambda x: f"Write article based on: {x}")], 
+            hooks=TracingHooks / MyPipelineHooks())
         result = await pipeline.run("Latest AI news")
     """
-
-    def __init__(self, steps: list[PipelineStep]) -> None:
+    def __init__(
+        self,
+        steps: list[PipelineStep],
+        hooks: DefaultHooks | None = None,
+        config: HarnessConfig | None = None,
+    ) -> None:
         self.steps = steps
+        self.hooks = resolve_hooks(hooks, config)
 
-    async def run(self, input: str, hooks: Any = None) -> PipelineResult:
+    async def run(self, input: str) -> PipelineResult:
         current_input = input
         step_results: dict[str, AgentResult] = {}
         skipped: list[str] = []
 
-        if hasattr(hooks, "on_pipeline_start"):
-            await hooks.on_pipeline_start("pipeline")
+        if hasattr(self.hooks, "on_pipeline_start"):
+            await self.hooks.on_pipeline_start("pipeline")
 
         for step in self.steps:
             # Check condition
@@ -70,8 +77,8 @@ class Pipeline:
             step_results[step.name] = result
             current_input = result.output
 
-        if hasattr(hooks, "on_pipeline_end"):
-            await hooks.on_pipeline_end("pipeline")
+        if hasattr(self.hooks, "on_pipeline_end"):
+            await self.hooks.on_pipeline_end("pipeline")
 
         return PipelineResult(
             output=current_input,

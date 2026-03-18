@@ -7,7 +7,7 @@ from typing import Any, AsyncIterator
 import openai
 from openai import AsyncOpenAI
 
-from agent_harness.core.config import LLMConfig
+from agent_harness.core.config import HarnessConfig, LLMConfig, resolve_llm_config
 from agent_harness.core.errors import (
     LLMAuthenticationError,
     LLMContextLengthError,
@@ -32,12 +32,13 @@ class OpenAIProvider(BaseLLM):
     - Error mapping to framework exceptions
     """
 
-    def __init__(self, config: LLMConfig) -> None:
-        super().__init__(config)
+    def __init__(self, config: HarnessConfig | LLMConfig | None = None) -> None:
+        llm_config = resolve_llm_config(config)
+        super().__init__(llm_config)
         self._client = AsyncOpenAI(
-            api_key=config.api_key,
-            base_url=config.base_url,
-            timeout=config.timeout,
+            api_key=llm_config.api_key,
+            base_url=llm_config.base_url,
+            timeout=llm_config.timeout,
         )
 
     async def generate(
