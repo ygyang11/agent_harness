@@ -37,4 +37,5 @@ plan*.md
 review*.md
 
 # ===== Output & Traces =====
+.notes
 traces/
