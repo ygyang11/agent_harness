@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from agent_harness.core.config import HarnessConfig
 from agent_harness.core.errors import AgentError, MaxStepsExceededError
 from agent_harness.core.event import EventEmitter
-from agent_harness.core.message import Message, ToolCall, ToolResult
+from agent_harness.core.message import Message, Role, ToolCall, ToolResult
 from agent_harness.llm.base import BaseLLM
 from agent_harness.llm import create_llm
 from agent_harness.llm.types import LLMResponse, Usage
@@ -109,6 +109,20 @@ class BaseAgent(ABC, EventEmitter):
     def tool_schemas(self) -> list[ToolSchema]:
         return self.tool_registry.get_schemas()
 
+    async def _should_inject_system_prompt(self) -> bool:
+        if not self.system_prompt:
+            return False
+
+        context_messages = await self.context.short_term_memory.get_context_messages()
+        if not context_messages:
+            return True
+
+        first_message = context_messages[0]
+        return not (
+            first_message.role == Role.SYSTEM
+            and (first_message.content or "") == self.system_prompt
+        )
+
     async def run(self, input: str | Message) -> AgentResult:
         """Main execution loop.
 
@@ -132,7 +146,7 @@ class BaseAgent(ABC, EventEmitter):
             input_text = input.content or ""
 
         # Initialize context
-        if self.system_prompt:
+        if await self._should_inject_system_prompt():
             await self.context.short_term_memory.add_message(
                 Message.system(self.system_prompt)
             )

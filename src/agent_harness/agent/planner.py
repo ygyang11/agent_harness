@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 _PLAN_RESULT_MAX_TOKENS = 26
 _PLAN_EVENT_OUTPUT_MAX_TOKENS = 64
+_REPLANNER_INPUT_PROMPT = "Please provide your replanning decision in valid JSON."
 
 
 # ---------------------------------------------------------------------------
@@ -388,7 +389,7 @@ class PlanAndExecuteAgent(BaseAgent):
                     f"Step [{current.id}] result: {current.result}",
                 )
 
-                replan_result = await replanner.run(input_text)
+                replan_result = await replanner.run(_REPLANNER_INPUT_PROMPT)
                 total_usage = total_usage + replan_result.usage
 
                 decision = self._parse_replan_decision(replan_result.output)
@@ -399,12 +400,47 @@ class PlanAndExecuteAgent(BaseAgent):
                     break
 
                 if decision.should_replan and decision.updated_steps:
-                    kept = [
+                    previous_pending = [
+                        s.model_copy(deep=True)
+                        for s in plan.steps
+                        if s.status not in ("done", "failed")
+                    ]
+                    completed = [
                         s
                         for s in plan.steps
                         if s.status in ("done", "failed")
                     ]
-                    plan.steps = kept + decision.updated_steps
+                    plan.steps = completed + decision.updated_steps
+
+                    reason_text = (
+                        decision.reason.strip()
+                        or "No reason provided by replanner."
+                    )
+                    change_summary = self._summarize_plan_change(
+                        previous_pending,
+                        decision.updated_steps,
+                    )
+                    executor.context.working_memory.set(
+                        "replan_reason",
+                        reason_text,
+                    )
+                    executor.context.working_memory.set(
+                        "plan_change",
+                        change_summary,
+                    )
+                    await executor.context.short_term_memory.add_message(
+                        Message.system(
+                            "Plan has been updated. Review fields "
+                            "'replan_reason' and 'plan_change', ignore superseded "
+                            "pending steps, and execute only current_step."
+                        )
+                    )
+                    await self.emit(
+                        "agent.replan.applied",
+                        agent=self.name,
+                        reason=reason_text,
+                        updated_steps=len(decision.updated_steps),
+                    )
 
             else:
                 final_output = (
@@ -445,6 +481,65 @@ class PlanAndExecuteAgent(BaseAgent):
             if not self.context.state.is_terminal:
                 self.context.state.transition(AgentState.ERROR)
             raise
+
+    @staticmethod
+    def _step_signature(step: PlanStep) -> tuple[str, str]:
+        return (step.id.strip(), step.description.strip())
+
+    @staticmethod
+    def _format_step_list(
+        steps: list[PlanStep],
+    ) -> str:
+        if not steps:
+            return "- (none)"
+
+        lines = [f"- [{step.id}] {step.description}" for step in steps]
+        return "\n".join(lines)
+
+    @classmethod
+    def _summarize_plan_change(
+        cls,
+        previous_pending: list[PlanStep],
+        updated_steps: list[PlanStep],
+    ) -> str:
+        previous_signatures = {
+            cls._step_signature(step)
+            for step in previous_pending
+        }
+        updated_signatures = {
+            cls._step_signature(step)
+            for step in updated_steps
+        }
+
+        kept = [
+            step
+            for step in updated_steps
+            if cls._step_signature(step) in previous_signatures
+        ]
+        removed = [
+            step
+            for step in previous_pending
+            if cls._step_signature(step) not in updated_signatures
+        ]
+        added = [
+            step
+            for step in updated_steps
+            if cls._step_signature(step) not in previous_signatures
+        ]
+
+        sections = [
+            "### Plan Change",
+            "#### Kept (same id+description)",
+            "- done or failed steps are retained from the previous plan.",
+            cls._format_step_list(kept),
+            "",
+            "#### Removed",
+            cls._format_step_list(removed),
+            "",
+            "#### Added",
+            cls._format_step_list(added),
+        ]
+        return "\n".join(sections)
 
     @staticmethod
     def _parse_plan(content: str, fallback_goal: str) -> Plan:

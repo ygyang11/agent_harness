@@ -150,6 +150,162 @@ class TestPlanAndExecuteAgent:
         assert result.output == "Finally Done"
 
     @pytest.mark.asyncio
+    async def test_replanner_uses_fixed_instruction_input(self) -> None:
+        llm = MockLLM()
+        llm.responses.append(
+            _make_json_response(
+                {
+                    "goal": "Test Goal",
+                    "steps": [{"id": "1", "description": "Step 1"}],
+                }
+            )
+        )
+        llm.responses.append(_make_text_response("Step 1 done"))
+        llm.responses.append(
+            _make_json_response(
+                {
+                    "goal_achieved": True,
+                    "final_answer": "Done",
+                }
+            )
+        )
+
+        agent = PlanAndExecuteAgent(name="test_agent", llm=llm, max_steps=5)
+        await agent.run("Do it")
+
+        replanner_call = next(
+            call
+            for call in llm.call_history
+            if any(
+                msg.role.value == "system"
+                and (msg.content or "").startswith("You are a replanning agent")
+                for msg in call
+            )
+        )
+        user_inputs = [
+            msg.content or ""
+            for msg in replanner_call
+            if msg.role.value == "user"
+        ]
+        assert user_inputs == [
+            "Please provide your replanning decision in valid JSON."
+        ]
+
+    @pytest.mark.asyncio
+    async def test_replanning_injects_brief_notice_and_working_fields(
+        self,
+    ) -> None:
+        llm = MockLLM()
+
+        llm.responses.append(
+            _make_json_response(
+                {
+                    "goal": "Test Goal",
+                    "steps": [{"id": "1", "description": "Step 1"}],
+                }
+            )
+        )
+        llm.responses.append(_make_text_response("Step 1 result (partial)"))
+        llm.responses.append(
+            _make_json_response(
+                {
+                    "goal_achieved": False,
+                    "should_replan": True,
+                    "reason": "Need more steps",
+                    "updated_steps": [{"id": "2", "description": "Step 2"}],
+                }
+            )
+        )
+        llm.responses.append(_make_text_response("Step 2 result"))
+        llm.responses.append(
+            _make_json_response(
+                {
+                    "goal_achieved": True,
+                    "final_answer": "Finally Done",
+                }
+            )
+        )
+
+        agent = PlanAndExecuteAgent(name="test_agent", llm=llm, max_steps=10)
+        await agent.run("Do it")
+
+        second_executor_call = next(
+            call
+            for call in llm.call_history
+            if any(
+                msg.role.value == "user" and msg.content == "Step 2"
+                for msg in call
+            )
+        )
+        system_texts = [
+            msg.content or ""
+            for msg in second_executor_call
+            if msg.role.value == "system"
+        ]
+
+        assert any("Plan has been updated." in text for text in system_texts)
+        assert any("replan_reason" in text for text in system_texts)
+        assert any("plan_change" in text for text in system_texts)
+        assert any(
+            "done or failed steps are retained from the previous plan."
+            in text
+            for text in system_texts
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_replan_does_not_inject_brief_notice(self) -> None:
+        llm = MockLLM()
+
+        llm.responses.append(
+            _make_json_response(
+                {
+                    "goal": "Test Goal",
+                    "steps": [
+                        {"id": "1", "description": "Step 1"},
+                        {"id": "2", "description": "Step 2"},
+                    ],
+                }
+            )
+        )
+        llm.responses.append(_make_text_response("Step 1 done"))
+        llm.responses.append(
+            _make_json_response(
+                {
+                    "goal_achieved": False,
+                    "should_replan": False,
+                }
+            )
+        )
+        llm.responses.append(_make_text_response("Step 2 done"))
+        llm.responses.append(
+            _make_json_response(
+                {
+                    "goal_achieved": True,
+                    "final_answer": "All Done",
+                }
+            )
+        )
+
+        agent = PlanAndExecuteAgent(name="test_agent", llm=llm, max_steps=10)
+        await agent.run("Do it")
+
+        second_executor_call = next(
+            call
+            for call in llm.call_history
+            if any(
+                msg.role.value == "user" and msg.content == "Step 2"
+                for msg in call
+            )
+        )
+        system_texts = [
+            msg.content or ""
+            for msg in second_executor_call
+            if msg.role.value == "system"
+        ]
+
+        assert not any("Plan has been updated." in text for text in system_texts)
+
+    @pytest.mark.asyncio
     async def test_max_steps_exceeded(self) -> None:
         """Test loop termination."""
         llm = MockLLM()

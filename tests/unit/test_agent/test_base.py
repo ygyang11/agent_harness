@@ -14,6 +14,7 @@ from agent_harness.agent.hooks import DefaultHooks, TracingHooks
 from agent_harness.agent.base import StepResult
 from agent_harness.agent.conversational import ConversationalAgent
 from agent_harness.core.config import HarnessConfig, LLMConfig, TracingConfig
+from agent_harness.core.message import Message
 from agent_harness.context.state import AgentState
 from agent_harness.llm.types import Usage
 from tests.conftest import MockLLM
@@ -63,6 +64,39 @@ class TestAgentReuse:
         r2 = await agent.run("second")
         assert r2.output == "recovered"
         assert agent.context.state.current == AgentState.FINISHED
+
+    @pytest.mark.asyncio
+    async def test_system_prompt_not_duplicated_on_rerun(self) -> None:
+        llm = MockLLM()
+        llm.add_text_response("first")
+        llm.add_text_response("second")
+
+        agent = ConversationalAgent(name="test", llm=llm, system_prompt="SYS")
+        await agent.run("hello")
+        await agent.run("hello again")
+
+        messages = await agent.context.short_term_memory.get_context_messages()
+        system_messages = [
+            msg
+            for msg in messages
+            if msg.role.value == "system" and (msg.content or "") == "SYS"
+        ]
+        assert len(system_messages) == 1
+
+    @pytest.mark.asyncio
+    async def test_system_prompt_injected_when_first_system_differs(self) -> None:
+        llm = MockLLM()
+        llm.add_text_response("ok")
+
+        agent = ConversationalAgent(name="test", llm=llm, system_prompt="SYS_B")
+        await agent.context.short_term_memory.add_message(Message.system("SYS_A"))
+
+        await agent.run("hello")
+        messages = await agent.context.short_term_memory.get_context_messages()
+        assert any(
+            msg.role.value == "system" and (msg.content or "") == "SYS_B"
+            for msg in messages
+        )
 
 
 class TestUsageAccumulation:
