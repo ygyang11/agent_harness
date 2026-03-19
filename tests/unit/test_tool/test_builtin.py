@@ -16,6 +16,9 @@ class TestBuiltinTools:
         assert "list_directory" in names
         assert "python_exec" in names
         assert "http_request" in names
+        assert "take_notes" in names
+        assert "list_notes" in names
+        assert "read_notes" in names
 
     def test_all_tools_have_schema(self) -> None:
         for t in BUILTIN_TOOLS:

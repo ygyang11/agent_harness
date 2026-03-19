@@ -1,12 +1,14 @@
 """Deep Research — multi-agent orchestration for complex research tasks."""
 
 import asyncio
-import random
 from pathlib import Path
 
-from agent_harness import BaseTool, ConversationalAgent, HarnessConfig, ReActAgent, tool
+from agent_harness import BaseTool, ConversationalAgent, HarnessConfig, ReActAgent
 from agent_harness.agent.base import AgentResult
 from agent_harness.orchestration import AgentTeam, DAGNode, DAGOrchestrator, TeamMode
+from agent_harness.tool.builtin import list_notes as builtin_list_notes
+from agent_harness.tool.builtin import read_notes as builtin_read_notes
+from agent_harness.tool.builtin import take_notes as builtin_take_notes
 from agent_harness.tool.builtin import web_search as builtin_web_search
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -46,33 +48,6 @@ DEEP_RESEARCH_PROMPTS: dict[str, str] = {
         "based on the plan, parallel research outputs, and review feedback."
     ),
 }
-
-
-@tool
-async def read_article(url: str) -> str:
-    """Read and extract content from a web article.
-
-    Args:
-        url: URL of the article to read.
-    """
-    return (
-        f"Article from {url}: This is a comprehensive piece covering recent "
-        f"developments, expert opinions, and statistical data. Key takeaway: "
-        f"the field is advancing rapidly with {random.randint(3, 8)} major "
-        f"milestones achieved in the past quarter."
-    )
-
-
-@tool
-async def take_notes(topic: str, content: str) -> str:
-    """Save research notes on a specific topic.
-
-    Args:
-        topic: The topic these notes relate to.
-        content: The notes to save.
-    """
-    word_count = len(content.split())
-    return f"Saved {word_count}-word note on '{topic}'. Notes are available for synthesis."
 
 
 def format_dag_outputs(outputs: dict[str, AgentResult]) -> str:
@@ -144,7 +119,12 @@ def build_review_team(config: HarnessConfig) -> AgentTeam:
 
 async def main() -> None:
     config = HarnessConfig.load(PROJECT_ROOT / "config.yaml")
-    research_tools: list[BaseTool] = [builtin_web_search, read_article, take_notes]
+    research_tools: list[BaseTool] = [
+        builtin_web_search,
+        builtin_take_notes,
+        builtin_list_notes,
+        builtin_read_notes,
+    ]
     query = "What is the current state of quantum computing and its potential impact?"
 
     print(f"Research query: {query}\n")
