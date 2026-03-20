@@ -393,3 +393,39 @@ class TestParallelDAGNodes:
         await hooks.on_run_end("agent1", "done")
         await hooks.on_dag_node_end("n1")
         await hooks.on_dag_end("dag")
+
+
+class TestParallelTeamWorkers:
+    @pytest.mark.asyncio
+    async def test_parallel_team_workers_are_siblings(self) -> None:
+        """Parallel team workers should share the team span as parent."""
+        hooks = TracingHooks(trace_dir="/tmp/test_traces")
+        await hooks.on_team_start("team", "supervisor")
+        team_span = hooks._team_span_stack[-1]
+
+        await hooks.on_run_start("worker_a", "task a")
+        span_a = hooks._run_span_stack[-1]
+        await hooks.on_run_start("worker_b", "task b")
+        span_b = hooks._run_span_stack[-1]
+
+        assert span_a.parent_span_id == team_span.span_id
+        assert span_b.parent_span_id == team_span.span_id
+        assert hooks._span_depth_map[span_a.span_id] == hooks._span_depth_map[span_b.span_id]
+
+        await hooks.on_run_end("worker_b", "done b")
+        await hooks.on_run_end("worker_a", "done a")
+        await hooks.on_team_end("team", "supervisor")
+
+    @pytest.mark.asyncio
+    async def test_pipeline_agents_use_pipeline_as_parent(self) -> None:
+        """Agents inside a pipeline should use the pipeline span as parent."""
+        hooks = TracingHooks(trace_dir="/tmp/test_traces")
+        await hooks.on_pipeline_start("pipe")
+        pipe_span = hooks._pipeline_span_stack[-1]
+
+        await hooks.on_run_start("agent1", "hello")
+        agent_span = hooks._run_span_stack[-1]
+        assert agent_span.parent_span_id == pipe_span.span_id
+
+        await hooks.on_run_end("agent1", "done")
+        await hooks.on_pipeline_end("pipe")

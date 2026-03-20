@@ -300,6 +300,7 @@ class TracingHooks(DefaultHooks):
         span = self._new_span(f"pipeline.{pipeline_name}", kind="orchestration")
         span.attributes["orchestration"] = "pipeline"
         self._pipeline_span_stack.append(span)
+        _active_orchestration_parent.set(span)
         self._console.print_start(
             kind=span.kind,
             name=span.name,
@@ -308,6 +309,7 @@ class TracingHooks(DefaultHooks):
         )
 
     async def on_pipeline_end(self, pipeline_name: str) -> None:
+        _active_orchestration_parent.set(None)
         span = self._pipeline_span_stack.pop() if self._pipeline_span_stack else None
         if span:
             self._finish_until(span)
@@ -360,6 +362,7 @@ class TracingHooks(DefaultHooks):
         span.attributes["orchestration"] = "team"
         span.attributes["mode"] = mode
         self._team_span_stack.append(span)
+        _active_orchestration_parent.set(span)
         self._console.print_start(
             kind=span.kind,
             name=span.name,
@@ -371,6 +374,7 @@ class TracingHooks(DefaultHooks):
         )
 
     async def on_team_end(self, team_name: str, mode: str) -> None:
+        _active_orchestration_parent.set(None)
         span = self._team_span_stack.pop() if self._team_span_stack else None
         if span:
             self._finish_until(span)
