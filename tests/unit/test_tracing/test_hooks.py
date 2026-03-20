@@ -481,3 +481,28 @@ class TestParallelStepSpans:
         agent_names = {s.name for s in agent_spans}
         assert len(agent_spans) == 3
         assert agent_names == {"agent.a", "agent.b", "agent.c"}
+
+    @pytest.mark.asyncio
+    async def test_parallel_step_parent_is_own_run_span(self) -> None:
+        """Each parallel step span should be a child of its own agent run span."""
+        import asyncio
+
+        hooks = TracingHooks(trace_dir="/tmp/test_traces")
+        await hooks.on_team_start("team", "supervisor")
+
+        async def run_worker(name: str) -> None:
+            await hooks.on_run_start(name, f"task {name}")
+            await hooks.on_step_start(name, 1)
+            await asyncio.sleep(0.01)
+            await hooks.on_step_end(name, 1)
+            await hooks.on_run_end(name, f"done {name}")
+
+        await asyncio.gather(run_worker("a"), run_worker("b"))
+        await hooks.on_team_end("team", "supervisor")
+
+        agent_spans = {s.name: s for s in hooks._all_spans if s.kind == "agent"}
+        step_spans = [s for s in hooks._all_spans if s.name == "step.1"]
+
+        assert len(step_spans) == 2
+        for step_span in step_spans:
+            assert step_span.parent_span_id in {s.span_id for s in agent_spans.values()}

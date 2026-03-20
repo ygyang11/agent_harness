@@ -153,6 +153,45 @@ class TestSupervisorMode:
 
         assert worker.context is not original_context
 
+    @pytest.mark.asyncio
+    async def test_supervisor_workers_receive_context_in_working_memory(self) -> None:
+        llm = MockLLM()
+        llm.add_text_response('{"assignments": {"reviewer": "Check quality"}}')
+        llm.add_text_response("review done")
+        llm.add_text_response("final synthesis")
+
+        worker = _make_worker("reviewer", llm)
+        team = AgentTeam(agents=[worker], mode=TeamMode.SUPERVISOR)
+        original_input = "Full research data here with lots of detail"
+
+        await team.run(original_input)
+
+        assert worker.context.working_memory.get("overall_task") == original_input
+
+    @pytest.mark.asyncio
+    async def test_supervisor_workers_receive_subtask_prefix(self) -> None:
+        llm = MockLLM()
+        llm.add_text_response('{"assignments": {"reviewer": "Check quality"}}')
+        llm.add_text_response("review done")
+        llm.add_text_response("final synthesis")
+
+        worker = _make_worker("reviewer", llm)
+        team = AgentTeam(agents=[worker], mode=TeamMode.SUPERVISOR)
+
+        await team.run("Full task")
+
+        worker_call = next(
+            msgs for msgs in llm.call_history
+            if any(
+                msg.role.value == "user"
+                and "Your assigned subtask:" in (msg.content or "")
+                for msg in msgs
+            )
+        )
+        user_msgs = [m for m in worker_call if m.role.value == "user"]
+        assert user_msgs[0].content is not None
+        assert user_msgs[0].content.startswith("Your assigned subtask:")
+
 
 class TestRoundRobinMode:
     @pytest.mark.asyncio

@@ -324,7 +324,12 @@ class AgentTeam:
         if assignments:
             for worker_name, subtask in assignments.items():
                 if worker_name in worker_map:
-                    named_inputs.append((worker_name, subtask))
+                    worker_map[worker_name].context.working_memory.set(
+                        "overall_task", input
+                    )
+                    named_inputs.append(
+                        (worker_name, f"Your assigned subtask:\n{subtask}")
+                    )
 
         if not named_inputs:
             named_inputs = [(worker.name, input) for worker in self.agents]

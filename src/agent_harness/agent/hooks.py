@@ -234,8 +234,9 @@ class TracingHooks(DefaultHooks):
         )
 
     async def on_step_start(self, agent_name: str, step: int) -> None:
+        run_span = _active_run_span.get(None)
         step_span = self._new_span(
-            f"step.{step}", kind="internal", agent=agent_name,
+            f"step.{step}", kind="internal", parent_span=run_span, agent=agent_name,
         )
         _active_step_span.set(step_span)
 
@@ -246,7 +247,7 @@ class TracingHooks(DefaultHooks):
             _active_step_span.set(None)
 
     async def on_llm_call(self, agent_name: str, messages: list[Any]) -> None:
-        active = self._span_stack[-1] if self._span_stack else self._root_span
+        active = _active_step_span.get(None) or _active_run_span.get(None)
         if active:
             active.add_event(
                 "llm_call",
@@ -255,13 +256,13 @@ class TracingHooks(DefaultHooks):
             )
 
     async def on_tool_call(self, agent_name: str, tool_call: ToolCall) -> None:
-        active = self._span_stack[-1] if self._span_stack else self._root_span
+        active = _active_step_span.get(None) or _active_run_span.get(None)
         if active:
             details = _summarize_tool_call(tool_call)
             active.add_event("tool_call", agent=agent_name, **details)
 
     async def on_tool_result(self, agent_name: str, result: Any) -> None:
-        active = self._span_stack[-1] if self._span_stack else self._root_span
+        active = _active_step_span.get(None) or _active_run_span.get(None)
         if active:
             output = str(getattr(result, "output", result))
             active.add_event(
