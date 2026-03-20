@@ -71,13 +71,13 @@ class TestToPromptString:
 
     def test_long_value_truncated(self) -> None:
         wm = WorkingMemory()
-        long_text = "token " * 2000
+        long_text = "token " * 8000
         wm.set("big", long_text)
         result = wm.to_prompt_string()
         formatted = WorkingMemory._format_value(long_text)
         assert formatted.endswith("...")
         assert formatted in result
-        assert count_tokens(formatted) <= 160
+        assert count_tokens(formatted) <= 5000
 
     def test_goal_auto_categorizes_under_objective(self) -> None:
         wm = WorkingMemory()

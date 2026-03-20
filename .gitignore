@@ -32,6 +32,9 @@ config.yaml
 .env
 .claude
 .copilot
+.plan
+.research
+.review
 research*.md
 plan*.md
 review*.md

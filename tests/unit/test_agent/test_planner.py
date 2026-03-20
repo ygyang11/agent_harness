@@ -364,3 +364,94 @@ class TestPlanAndExecuteAgent:
         
         assert "Found" in result.output
         assert len(mock_tool.call_history) == 1
+
+
+class TestPlanDetailedProgress:
+    def test_detailed_progress_includes_full_results(self) -> None:
+        """detailed_progress preserves complete step results while
+        progress_summary truncates them."""
+        long_result = "A" * 2000
+        plan = Plan(
+            goal="Test goal",
+            steps=[
+                PlanStep(
+                    id="1",
+                    description="Step 1",
+                    status="done",
+                    result=long_result,
+                ),
+            ],
+        )
+
+        detailed = plan.detailed_progress
+        summary = plan.progress_summary
+
+        assert long_result in detailed
+        assert long_result not in summary
+        assert "..." in summary
+
+
+class TestReplannerContext:
+    @pytest.mark.asyncio
+    async def test_replanner_with_full_context_achieves_goal(self) -> None:
+        """When all plan steps are done the replanner should set goal_achieved
+        and return the final answer instead of falling back to progress_summary."""
+        llm = MockLLM()
+        llm.responses.append(_make_json_response({
+            "goal": "Write report",
+            "steps": [
+                {"id": "1", "description": "Research"},
+                {"id": "2", "description": "Write"},
+            ],
+        }))
+        llm.responses.append(_make_text_response("Research findings here"))
+        llm.responses.append(_make_json_response({
+            "goal_achieved": False,
+            "should_replan": False,
+        }))
+        llm.responses.append(_make_text_response("Final report content here"))
+        llm.responses.append(_make_json_response({
+            "goal_achieved": True,
+            "final_answer": "Final report content here",
+        }))
+
+        agent = PlanAndExecuteAgent(name="test", llm=llm, max_steps=10)
+        result = await agent.run("Write a report")
+
+        assert result.output == "Final report content here"
+        assert "Goal:" not in result.output
+
+    @pytest.mark.asyncio
+    async def test_replanner_receives_remaining_steps(self) -> None:
+        """The replanner working memory should contain a remaining_steps
+        field indicating how many steps are left or that all are completed."""
+        llm = MockLLM()
+        llm.responses.append(_make_json_response({
+            "goal": "G",
+            "steps": [{"id": "1", "description": "Only step"}],
+        }))
+        llm.responses.append(_make_text_response("Done"))
+        llm.responses.append(_make_json_response({
+            "goal_achieved": True,
+            "final_answer": "Done",
+        }))
+
+        agent = PlanAndExecuteAgent(name="test", llm=llm, max_steps=5)
+        result = await agent.run("Simple task")
+        assert result.output == "Done"
+
+        replanner_call = next(
+            call
+            for call in llm.call_history
+            if any(
+                msg.role.value == "system"
+                and (msg.content or "").startswith("You are a replanning agent")
+                for msg in call
+            )
+        )
+        system_texts = [
+            msg.content or ""
+            for msg in replanner_call
+            if msg.role.value == "system"
+        ]
+        assert any("remaining_steps" in text for text in system_texts)

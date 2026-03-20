@@ -11,10 +11,7 @@ class TestBuiltinTools:
 
     def test_builtin_tools_include_all_core_tools(self) -> None:
         names = [t.name for t in BUILTIN_TOOLS]
-        assert "read_file" in names
-        assert "write_file" in names
-        assert "list_directory" in names
-        assert "python_exec" in names
+        assert "terminal_tool" in names
         assert "http_request" in names
         assert "take_notes" in names
         assert "list_notes" in names

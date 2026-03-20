@@ -50,7 +50,7 @@ _CATEGORY_HEADINGS: dict[ScratchpadCategory, str] = {
     ScratchpadCategory.ERROR: "Errors",
 }
 
-_MAX_VALUE_TOKENS = 160
+_MAX_VALUE_TOKENS = 5000
 
 
 class WorkingMemory(BaseMemory):

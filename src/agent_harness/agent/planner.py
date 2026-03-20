@@ -170,7 +170,7 @@ class Plan(BaseModel):
 
     @property
     def progress_summary(self) -> str:
-        """Human-readable progress summary."""
+        """Compact progress summary with truncated step results."""
         lines = [f"Goal: {self.goal}"]
         for s in self.steps:
             marker = {
@@ -188,6 +188,27 @@ class Plan(BaseModel):
             else:
                 result_str = ""
             lines.append(f"  {marker} [{s.id}] {s.description}{result_str}")
+        return "\n".join(lines)
+
+    @property
+    def detailed_progress(self) -> str:
+        """Full progress report with untruncated step results.
+
+        Unlike progress_summary which truncates each step result for compact
+        display, this property preserves complete results so that the
+        replanner can accurately judge step quality and goal achievement.
+        """
+        lines = [f"Goal: {self.goal}"]
+        for s in self.steps:
+            marker = {
+                "pending": "○",
+                "in_progress": "◉",
+                "done": "✓",
+                "failed": "✗",
+            }.get(s.status, "?")
+            lines.append(f"  {marker} [{s.id}] {s.description}")
+            if s.result:
+                lines.append(f"    Result: {s.result}")
         return "\n".join(lines)
 
 
@@ -382,11 +403,18 @@ class PlanAndExecuteAgent(BaseAgent):
 
                 replanner.context.working_memory.set("goal", plan.goal)
                 replanner.context.working_memory.set(
-                    "plan", plan.progress_summary
+                    "plan", plan.detailed_progress
                 )
                 replanner.context.working_memory.set(
                     "current_step",
                     f"Step [{current.id}] result: {current.result}",
+                )
+                pending = [s for s in plan.steps if s.status == "pending"]
+                replanner.context.working_memory.set(
+                    "remaining_steps",
+                    f"{len(pending)} step(s) remaining"
+                    if pending
+                    else "All steps completed — decide if goal is achieved.",
                 )
 
                 replan_result = await replanner.run(_REPLANNER_INPUT_PROMPT)

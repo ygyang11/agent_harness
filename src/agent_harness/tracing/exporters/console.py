@@ -12,7 +12,7 @@ import sys
 from agent_harness.tracing.tracer import Span
 from agent_harness.utils.token_counter import truncate_text_by_tokens
 
-_CONSOLE_ATTR_MAX_TOKENS = 40
+_CONSOLE_ATTR_MAX_TOKENS = 100
 
 # ANSI color codes
 _COLORS = {
@@ -114,10 +114,9 @@ class ConsoleExporter:
 
     @staticmethod
     def _format_attr_value(value: object) -> str:
-        text = str(value).splitlines()
-        first_line = text[0] if text else ""
+        text = str(value)
         return truncate_text_by_tokens(
-            first_line,
+            text,
             max_tokens=_CONSOLE_ATTR_MAX_TOKENS,
             suffix="...",
         )
