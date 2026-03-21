@@ -29,7 +29,9 @@ class _EnvVars:
     HARNESS_LLM_MODEL = "HARNESS_LLM_MODEL"
     HARNESS_LLM_TEMPERATURE = "HARNESS_LLM_TEMPERATURE"
     HARNESS_LLM_MAX_TOKENS = "HARNESS_LLM_MAX_TOKENS"
+    HARNESS_LLM_BASE_URL = "HARNESS_LLM_BASE_URL"
     HARNESS_VERBOSE = "HARNESS_VERBOSE"
+    HARNESS_TRACING_ENABLED = "HARNESS_TRACING_ENABLED"
 
 
 class LLMConfig(BaseModel):
@@ -65,7 +67,7 @@ class LLMConfig(BaseModel):
                 self.api_key = os.environ.get(env_var)
         # Auto-resolve base_url from environment if not set
         if self.base_url is None:
-            self.base_url = os.environ.get("HARNESS_LLM_BASE_URL")
+            self.base_url = os.environ.get(_EnvVars.HARNESS_LLM_BASE_URL)
 
 
 class ToolConfig(BaseModel):
@@ -190,7 +192,7 @@ class HarnessConfig(BaseModel):
             llm_data["temperature"] = float(v)
         if v := os.environ.get(_EnvVars.HARNESS_LLM_MAX_TOKENS):
             llm_data["max_tokens"] = int(v)
-        if v := os.environ.get("HARNESS_LLM_BASE_URL"):
+        if v := os.environ.get(_EnvVars.HARNESS_LLM_BASE_URL):
             llm_data["base_url"] = v
         if llm_data:
             data["llm"] = llm_data
@@ -199,7 +201,7 @@ class HarnessConfig(BaseModel):
             data["verbose"] = v.lower() in ("1", "true", "yes")
 
         tracing_data: dict[str, Any] = {}
-        if v := os.environ.get("HARNESS_TRACING_ENABLED"):
+        if v := os.environ.get(_EnvVars.HARNESS_TRACING_ENABLED):
             tracing_data["enabled"] = v.lower() in ("1", "true", "yes")
         if tracing_data:
             data["tracing"] = tracing_data
