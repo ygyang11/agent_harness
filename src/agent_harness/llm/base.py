@@ -130,31 +130,16 @@ class BaseLLM(ABC, EventEmitter):
         self,
         messages: list[Message],
         tools: list[ToolSchema] | None = None,
-        stream: bool = False,
         **kwargs: Any,
     ) -> LLMResponse:
-        """Generate with automatic event emission and built-in retry.
-
-        Args:
-            messages: Conversation history.
-            tools: Available tools for function calling.
-            stream: If True, uses streaming internally but still returns
-                a complete LLMResponse. Useful for real-time token delivery
-                in future extensions while keeping the same return type.
-            **kwargs: Passed through to generate() or stream().
-        """
+        """Generate with automatic event emission and built-in retry."""
         await self.emit("llm.generate.start", model=self.model_name, message_count=len(messages))
         try:
             if self._rate_limiter:
                 await self._rate_limiter.acquire()
-
-            if stream:
-                response = await self.collect_stream(messages, tools=tools, **kwargs)
-            else:
-                response = await self._with_retry(
-                    lambda: self.generate(messages, tools=tools, **kwargs)
-                )
-
+            response = await self._with_retry(
+                lambda: self.generate(messages, tools=tools, **kwargs)
+            )
             await self.emit(
                 "llm.generate.end",
                 model=self.model_name,
@@ -166,25 +151,21 @@ class BaseLLM(ABC, EventEmitter):
             await self.emit("llm.generate.error", model=self.model_name, error=str(e))
             raise
 
-    async def stream_with_events(
+    async def _stream_iter(
         self,
         messages: list[Message],
         tools: list[ToolSchema] | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[StreamDelta]:
-        """Stream with automatic event emission, rate limiting, and retry."""
+        """Internal streaming iterator with event emission and rate limiting."""
         await self.emit("llm.stream.start", model=self.model_name, message_count=len(messages))
         try:
             if self._rate_limiter:
                 await self._rate_limiter.acquire()
 
-            async def _do_stream() -> AsyncIterator[StreamDelta]:
-                return self.stream(messages, tools=tools, **kwargs)
-
-            stream_iter = await self._with_retry(_do_stream)
             total_usage = Usage()
 
-            async for delta in stream_iter:
+            async for delta in self.stream(messages, tools=tools, **kwargs):
                 if delta.usage:
                     total_usage = total_usage + delta.usage
                 yield delta
@@ -198,41 +179,60 @@ class BaseLLM(ABC, EventEmitter):
             await self.emit("llm.stream.error", model=self.model_name, error=str(e))
             raise
 
-    async def collect_stream(
+    async def stream_with_events(
         self,
         messages: list[Message],
         tools: list[ToolSchema] | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
-        """Stream a response and collect it into a single LLMResponse.
+        """Stream with event emission, rate limiting, and retry, returning LLMResponse.
 
-        Useful when you want streaming side-effects (e.g. real-time display)
-        but still need a complete LLMResponse at the end.
+        Symmetric with generate_with_events(): both return LLMResponse.
+        On transient errors the entire stream is retried from scratch.
         """
-        content_parts: list[str] = []
-        tool_calls: list[ToolCall] | None = None
-        total_usage = Usage()
-        finish_reason = FinishReason.STOP
+        max_retries = self.config.max_retries
+        delay = self.config.retry_delay
 
-        async for delta in self.stream(messages, tools=tools, **kwargs):
-            if delta.chunk.delta_content:
-                content_parts.append(delta.chunk.delta_content)
-            if delta.chunk.delta_tool_calls:
-                tool_calls = delta.chunk.delta_tool_calls
-            if delta.usage:
-                total_usage = total_usage + delta.usage
-            if delta.finish_reason:
-                finish_reason = delta.finish_reason
+        for attempt in range(max_retries + 1):
+            content_parts: list[str] = []
+            tool_calls: list[ToolCall] | None = None
+            total_usage = Usage()
+            finish_reason = FinishReason.STOP
 
-        return LLMResponse(
-            message=Message.assistant(
-                "".join(content_parts) or None,
-                tool_calls=tool_calls,
-            ),
-            usage=total_usage,
-            finish_reason=finish_reason,
-            model=self.model_name,
-        )
+            try:
+                async for delta in self._stream_iter(messages, tools=tools, **kwargs):
+                    if delta.chunk.delta_content:
+                        content_parts.append(delta.chunk.delta_content)
+                    if delta.chunk.delta_tool_calls:
+                        tool_calls = delta.chunk.delta_tool_calls
+                    if delta.usage:
+                        total_usage = total_usage + delta.usage
+                    if delta.finish_reason:
+                        finish_reason = delta.finish_reason
+
+                return LLMResponse(
+                    message=Message.assistant(
+                        "".join(content_parts) or None,
+                        tool_calls=tool_calls,
+                    ),
+                    usage=total_usage,
+                    finish_reason=finish_reason,
+                    model=self.model_name,
+                )
+
+            except (LLMRateLimitError, ConnectionError, TimeoutError) as e:
+                if attempt >= max_retries:
+                    raise
+                wait = delay * (2 ** attempt)
+                if isinstance(e, LLMRateLimitError) and e.retry_after:
+                    wait = max(wait, e.retry_after)
+                logger.warning(
+                    "Stream error (attempt %d/%d), retrying in %.1fs: %s",
+                    attempt + 1, max_retries, wait, e,
+                )
+                await asyncio.sleep(wait)
+
+        raise RuntimeError("Unreachable")  # pragma: no cover
 
     async def _with_retry(self, call: Callable[[], Coroutine[Any, Any, T]]) -> T:
         """Retry a coroutine on transient errors with exponential backoff."""

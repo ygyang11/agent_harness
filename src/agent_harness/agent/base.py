@@ -223,6 +223,7 @@ class BaseAgent(ABC, EventEmitter):
         tools: list[ToolSchema] | None = None,
         use_long_term: bool | None = None,
         long_term_query: str | None = None,
+        stream: bool = False,
         **kwargs: Any,
     ) -> LLMResponse:
         """Call the LLM with current context messages or provided messages.
@@ -233,7 +234,10 @@ class BaseAgent(ABC, EventEmitter):
             use_long_term: Query long-term memory and inject results.
                 If None, falls back to self.use_long_term_memory.
             long_term_query: Custom query for long-term retrieval.
-            **kwargs: Passed through to llm.generate_with_events().
+            stream: If True, uses streaming via llm.stream_with_events().
+                Each chunk is emitted as an event for real-time observation.
+                Returns the same LLMResponse type either way.
+            **kwargs: Passed through to the LLM call.
         """
         if use_long_term is None:
             use_long_term = self.use_long_term_memory
@@ -252,11 +256,13 @@ class BaseAgent(ABC, EventEmitter):
         if self.context.state.current != AgentState.THINKING:
             self.context.state.transition(AgentState.THINKING)
 
-        response = await self.llm.generate_with_events(messages, tools=tools, **kwargs)
+        if stream:
+            response = await self.llm.stream_with_events(messages, tools=tools, **kwargs)
+        else:
+            response = await self.llm.generate_with_events(messages, tools=tools, **kwargs)
 
         self._total_usage = self._total_usage + response.usage
 
-        # Store assistant message in memory
         await self.context.short_term_memory.add_message(response.message)
         return response
 
