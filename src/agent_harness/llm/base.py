@@ -124,9 +124,8 @@ class BaseLLM(ABC, EventEmitter):
             StreamDelta chunks as they arrive.
         """
         ...
-        # Make this a generator
         if False:
-            yield  # type: ignore[misc]
+            yield
 
     async def generate_with_events(
         self,
@@ -151,6 +150,38 @@ class BaseLLM(ABC, EventEmitter):
             return response
         except Exception as e:
             await self.emit("llm.generate.error", model=self.model_name, error=str(e))
+            raise
+
+    async def stream_with_events(
+        self,
+        messages: list[Message],
+        tools: list[ToolSchema] | None = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[StreamDelta]:
+        """Stream with automatic event emission, rate limiting, and retry."""
+        await self.emit("llm.stream.start", model=self.model_name, message_count=len(messages))
+        try:
+            if self._rate_limiter:
+                await self._rate_limiter.acquire()
+
+            async def _do_stream() -> AsyncIterator[StreamDelta]:
+                return self.stream(messages, tools=tools, **kwargs)
+
+            stream_iter = await self._with_retry(_do_stream)
+            total_usage = Usage()
+
+            async for delta in stream_iter:
+                if delta.usage:
+                    total_usage = total_usage + delta.usage
+                yield delta
+
+            await self.emit(
+                "llm.stream.end",
+                model=self.model_name,
+                usage=total_usage.model_dump(),
+            )
+        except Exception as e:
+            await self.emit("llm.stream.error", model=self.model_name, error=str(e))
             raise
 
     async def _with_retry(self, call: Callable[[], Coroutine[Any, Any, T]]) -> T:

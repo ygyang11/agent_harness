@@ -82,12 +82,68 @@ class AnthropicProvider(BaseLLM):
             messages, tools, tool_choice, temperature, max_tokens, **kwargs
         )
 
+        tc_buffer: dict[int, dict[str, str]] = {}
+
         try:
             async with self._client.messages.stream(**request_kwargs) as stream:
                 async for event in stream:
-                    delta = self._parse_stream_event(event)
-                    if delta:
-                        yield delta
+                    event_type = getattr(event, "type", None)
+
+                    if event_type == "content_block_start":
+                        block = getattr(event, "content_block", None)
+                        if block and getattr(block, "type", None) == "tool_use":
+                            idx: int = getattr(event, "index", 0)
+                            tc_buffer[idx] = {
+                                "id": getattr(block, "id", ""),
+                                "name": getattr(block, "name", ""),
+                                "input_json": "",
+                            }
+                        continue
+
+                    if event_type == "content_block_delta":
+                        delta = getattr(event, "delta", None)
+                        if delta and getattr(delta, "type", None) == "input_json_delta":
+                            idx = getattr(event, "index", 0)
+                            if idx in tc_buffer:
+                                tc_buffer[idx]["input_json"] += getattr(
+                                    delta, "partial_json", ""
+                                )
+                            continue
+                        if delta and getattr(delta, "type", None) == "text_delta":
+                            yield StreamDelta(
+                                chunk=MessageChunk(delta_content=delta.text),
+                            )
+                            continue
+
+                    if event_type == "message_delta":
+                        stop_reason = getattr(
+                            getattr(event, "delta", None), "stop_reason", None
+                        )
+                        finish = FinishReason.STOP
+                        delta_tool_calls = None
+                        if stop_reason == "tool_use":
+                            finish = FinishReason.TOOL_CALLS
+                            delta_tool_calls = []
+                            for buf_idx in sorted(tc_buffer):
+                                buf = tc_buffer[buf_idx]
+                                try:
+                                    args = json.loads(buf["input_json"]) if buf["input_json"] else {}
+                                except json.JSONDecodeError:
+                                    args = {}
+                                delta_tool_calls.append(
+                                    ToolCall(id=buf["id"], name=buf["name"], arguments=args)
+                                )
+                        elif stop_reason == "max_tokens":
+                            finish = FinishReason.LENGTH
+
+                        yield StreamDelta(
+                            chunk=MessageChunk(
+                                delta_tool_calls=delta_tool_calls,
+                                finish_reason=stop_reason,
+                            ),
+                            finish_reason=finish,
+                        )
+
         except anthropic.RateLimitError as e:
             raise LLMRateLimitError(str(e)) from e
         except anthropic.AuthenticationError as e:
@@ -140,14 +196,14 @@ class AnthropicProvider(BaseLLM):
     def _split_system_message(
         messages: list[Message],
     ) -> tuple[str | None, list[dict[str, Any]]]:
-        """Separate system message and format remaining for Anthropic API."""
-        system_content: str | None = None
+        """Separate system messages and format remaining for Anthropic API."""
+        system_parts: list[str] = []
         api_messages: list[dict[str, Any]] = []
 
         for msg in messages:
             if msg.role == Role.SYSTEM:
-                # Anthropic: system is a top-level parameter
-                system_content = msg.content
+                if msg.content:
+                    system_parts.append(msg.content)
                 continue
 
             if msg.role == Role.TOOL and msg.tool_result:
@@ -189,6 +245,12 @@ class AnthropicProvider(BaseLLM):
                 "content": msg.content or "",
             })
 
+        system_content = "\n\n".join(system_parts) if system_parts else None
+        if len(system_parts) > 1:
+            logger.warning(
+                "Multiple system messages (%d) merged for Anthropic API",
+                len(system_parts),
+            )
         return system_content, api_messages
 
     @staticmethod

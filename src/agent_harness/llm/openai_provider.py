@@ -1,6 +1,7 @@
 """OpenAI LLM provider for agent_harness."""
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, AsyncIterator
 
@@ -13,6 +14,7 @@ from agent_harness.core.errors import (
     LLMContextLengthError,
     LLMError,
     LLMRateLimitError,
+    LLMResponseError,
 )
 from agent_harness.core.message import Message, MessageChunk, Role, ToolCall
 from agent_harness.llm.base import BaseLLM
@@ -91,27 +93,41 @@ class OpenAIProvider(BaseLLM):
         except openai.APIError as e:
             raise LLMError(str(e)) from e
 
+        tc_buffer: dict[int, dict[str, str]] = {}
+
         async for chunk in stream:
             if not chunk.choices:
                 continue
             choice = chunk.choices[0]
             delta = choice.delta
 
-            # Parse tool calls from delta
-            delta_tool_calls = None
             if delta.tool_calls:
-                delta_tool_calls = [
-                    ToolCall(
-                        id=tc.id or "",
-                        name=tc.function.name or "" if tc.function else "",
-                        arguments={},  # arguments come as partial JSON strings in stream
-                    )
-                    for tc in delta.tool_calls
-                ]
+                for tc in delta.tool_calls:
+                    idx = tc.index
+                    if idx not in tc_buffer:
+                        tc_buffer[idx] = {"id": "", "name": "", "args": ""}
+                    if tc.id:
+                        tc_buffer[idx]["id"] = tc.id
+                    if tc.function and tc.function.name:
+                        tc_buffer[idx]["name"] = tc.function.name
+                    if tc.function and tc.function.arguments:
+                        tc_buffer[idx]["args"] += tc.function.arguments
 
             finish_reason = None
+            delta_tool_calls = None
             if choice.finish_reason:
                 finish_reason = _map_finish_reason(choice.finish_reason)
+                if tc_buffer and finish_reason == FinishReason.TOOL_CALLS:
+                    delta_tool_calls = []
+                    for idx in sorted(tc_buffer):
+                        buf = tc_buffer[idx]
+                        try:
+                            args = json.loads(buf["args"]) if buf["args"] else {}
+                        except json.JSONDecodeError:
+                            args = {}
+                        delta_tool_calls.append(
+                            ToolCall(id=buf["id"], name=buf["name"], arguments=args)
+                        )
 
             yield StreamDelta(
                 chunk=MessageChunk(
@@ -177,7 +193,7 @@ class OpenAIProvider(BaseLLM):
                     "type": "function",
                     "function": {
                         "name": tc.name,
-                        "arguments": __import__("json").dumps(tc.arguments),
+                        "arguments": json.dumps(tc.arguments),
                     },
                 }
                 for tc in msg.tool_calls
@@ -191,6 +207,11 @@ class OpenAIProvider(BaseLLM):
     @staticmethod
     def _parse_response(response: Any) -> LLMResponse:
         """Convert OpenAI response to LLMResponse."""
+        if not response.choices:
+            raise LLMResponseError(
+                "OpenAI API returned empty choices",
+                details={"model": response.model},
+            )
         choice = response.choices[0]
         msg = choice.message
 
@@ -201,7 +222,7 @@ class OpenAIProvider(BaseLLM):
                 ToolCall(
                     id=tc.id,
                     name=tc.function.name,
-                    arguments=__import__("json").loads(tc.function.arguments) if tc.function.arguments else {},
+                    arguments=json.loads(tc.function.arguments) if tc.function.arguments else {},
                 )
                 for tc in msg.tool_calls
             ]
