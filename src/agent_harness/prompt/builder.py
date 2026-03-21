@@ -24,6 +24,7 @@ class PromptBuilder:
 
     def __init__(self) -> None:
         self._messages: list[Message] = []
+        self._memory: BaseMemory | None = None
 
     def system(self, content: str, **metadata: Any) -> PromptBuilder:
         """Add a system message."""
@@ -56,15 +57,22 @@ class PromptBuilder:
         self._messages.append(Message(role=Role(role), content=content))
         return self
 
-    async def from_memory(self, memory: BaseMemory) -> PromptBuilder:
-        """Add messages from a memory instance."""
-        mem_messages = await memory.get_context_messages()
-        self._messages.extend(mem_messages)
+    def with_memory(self, memory: BaseMemory) -> PromptBuilder:
+        """Register a memory source to include when building."""
+        self._memory = memory
         return self
 
     def build(self) -> list[Message]:
-        """Build and return the message list."""
+        """Build and return the message list (sync, ignores memory)."""
         return list(self._messages)
+
+    async def build_async(self) -> list[Message]:
+        """Build the message list, including async memory retrieval."""
+        result = list(self._messages)
+        if self._memory is not None:
+            mem_messages = await self._memory.get_context_messages()
+            result.extend(mem_messages)
+        return result
 
     def __len__(self) -> int:
         return len(self._messages)

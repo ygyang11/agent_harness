@@ -32,7 +32,7 @@ class ConsoleExporter:
 
     def __init__(self, stream: TextIO = sys.stderr, color: bool = True) -> None:
         self._stream = stream
-        self._color = color
+        self._color = color and hasattr(stream, "isatty") and stream.isatty()
 
     def export(self, spans: list[Span]) -> None:
         """Export a list of spans to the console."""

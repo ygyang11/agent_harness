@@ -2,10 +2,22 @@
 from __future__ import annotations
 
 import asyncio
+import atexit
+import concurrent.futures
 import functools
 from typing import Any, Callable, Coroutine, TypeVar
 
 T = TypeVar("T")
+
+_sync_pool: concurrent.futures.ThreadPoolExecutor | None = None
+
+
+def _get_sync_pool() -> concurrent.futures.ThreadPoolExecutor:
+    global _sync_pool
+    if _sync_pool is None:
+        _sync_pool = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+        atexit.register(_sync_pool.shutdown, wait=False)
+    return _sync_pool
 
 
 def run_sync(coro: Coroutine[Any, Any, T]) -> T:
@@ -15,14 +27,13 @@ def run_sync(coro: Coroutine[Any, Any, T]) -> T:
     Otherwise, uses asyncio.run().
     """
     try:
-        loop = asyncio.get_running_loop()
+        asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(coro)
 
-    import concurrent.futures
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        future = pool.submit(asyncio.run, coro)
-        return future.result()
+    pool = _get_sync_pool()
+    future = pool.submit(asyncio.run, coro)
+    return future.result()
 
 
 async def gather_with_concurrency(

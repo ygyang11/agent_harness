@@ -32,17 +32,6 @@ class Usage(BaseModel):
         )
 
 
-class LLMRequest(BaseModel):
-    """Structured request to an LLM provider."""
-    messages: list[Message]
-    tools: list[dict[str, Any]] | None = None  # JSON Schema tool definitions
-    tool_choice: str | None = None  # "auto" | "required" | "none" | specific tool name
-    temperature: float | None = None
-    max_tokens: int | None = None
-    stop: list[str] | None = None
-    extra: dict[str, Any] = Field(default_factory=dict)  # provider-specific params
-
-
 class LLMResponse(BaseModel):
     """Response from an LLM provider."""
     message: Message
