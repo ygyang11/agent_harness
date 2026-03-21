@@ -7,6 +7,7 @@ from agent_harness.tool.builtin.web_fetch import (
     _extract_text_from_html,
     _format_response,
     _is_binary_content_type,
+    _is_pdf,
     web_fetch,
 )
 
@@ -108,11 +109,8 @@ class TestFormatResponse:
 
 
 class TestBinaryContentTypeDetection:
-    def test_pdf_is_binary(self) -> None:
-        assert _is_binary_content_type("application/pdf") is True
-
-    def test_pdf_with_charset_is_binary(self) -> None:
-        assert _is_binary_content_type("application/pdf; charset=utf-8") is True
+    def test_pdf_is_not_binary(self) -> None:
+        assert _is_binary_content_type("application/pdf") is False
 
     def test_zip_is_binary(self) -> None:
         assert _is_binary_content_type("application/zip") is True
@@ -137,3 +135,32 @@ class TestBinaryContentTypeDetection:
 
     def test_empty_is_not_binary(self) -> None:
         assert _is_binary_content_type("") is False
+
+
+class TestPdfDetection:
+    def test_pdf_content_type(self) -> None:
+        assert _is_pdf("application/pdf", "https://example.com/report") is True
+
+    def test_pdf_content_type_with_charset(self) -> None:
+        assert _is_pdf("application/pdf; charset=utf-8", "https://example.com/r") is True
+
+    def test_pdf_url_suffix(self) -> None:
+        assert _is_pdf("application/octet-stream", "https://example.com/report.pdf") is True
+
+    def test_pdf_url_suffix_case_insensitive(self) -> None:
+        assert _is_pdf("application/octet-stream", "https://example.com/Report.PDF") is True
+
+    def test_pdf_url_suffix_with_query_params(self) -> None:
+        assert _is_pdf("", "https://cdn.example.com/file.pdf?token=abc") is True
+
+    def test_pdf_empty_content_type_with_pdf_suffix(self) -> None:
+        assert _is_pdf("", "https://example.com/doc.pdf") is True
+
+    def test_html_not_pdf(self) -> None:
+        assert _is_pdf("text/html", "https://example.com/page") is False
+
+    def test_octet_stream_without_pdf_suffix(self) -> None:
+        assert _is_pdf("application/octet-stream", "https://example.com/data.bin") is False
+
+    def test_json_not_pdf(self) -> None:
+        assert _is_pdf("application/json", "https://api.example.com/data") is False

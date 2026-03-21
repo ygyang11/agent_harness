@@ -24,7 +24,6 @@ class WebFetchConfig:
     )
     # Content-Type prefixes that indicate binary (non-readable) content
     binary_content_types: frozenset[str] = frozenset({
-        "application/pdf",
         "application/zip",
         "application/octet-stream",
         "application/gzip",
@@ -34,6 +33,9 @@ class WebFetchConfig:
         "video/",
         "font/",
     })
+    # PDF detection: Content-Type values and URL suffixes
+    pdf_content_types: frozenset[str] = frozenset({"application/pdf"})
+    pdf_url_suffixes: frozenset[str] = frozenset({".pdf"})
 
 
 _CFG = WebFetchConfig()
@@ -97,6 +99,15 @@ def _is_binary_content_type(content_type: str) -> bool:
     return any(ct.startswith(prefix) for prefix in _CFG.binary_content_types)
 
 
+def _is_pdf(content_type: str, url: str) -> bool:
+    ct = content_type.lower().split(";")[0].strip()
+    if ct in _CFG.pdf_content_types:
+        return True
+    # Fallback: check URL path suffix (handles octet-stream or missing Content-Type)
+    path = urlparse(url).path.lower()
+    return any(path.endswith(suffix) for suffix in _CFG.pdf_url_suffixes)
+
+
 def _format_response(body: str, content_type: str) -> str:
     ct = content_type.lower()
     if "application/json" in ct:
@@ -151,6 +162,13 @@ async def web_fetch(url: str, timeout: int = 30) -> str:
                     return f"Error: HTTP {resp.status} for {url}"
 
                 content_type = resp.headers.get("Content-Type", "")
+
+                if _is_pdf(content_type, url):
+                    return (
+                        "Error: URL is a PDF document. "
+                        "Use `pdf_parser` tool to extract text from this PDF "
+                        "if needed and the tool is available."
+                    )
 
                 if _is_binary_content_type(content_type):
                     ct_short = content_type.split(";")[0].strip()

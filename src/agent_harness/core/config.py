@@ -89,6 +89,27 @@ class SearchConfig(BaseModel):
             self.serpapi_api_key = os.environ.get("SERPAPI_API_KEY")
 
 
+class PdfConfig(BaseModel):
+    """Configuration for PDF parsing providers."""
+
+    provider: str = "mineru"  # "mineru" | "paddleocr"
+    mineru_api_key: str | None = None
+    paddleocr_api_key: str | None = None
+
+    @field_validator("mineru_api_key", "paddleocr_api_key", mode="before")
+    @classmethod
+    def _blank_to_none(cls, value: str | None) -> str | None:
+        if isinstance(value, str) and value.strip() == "":
+            return None
+        return value
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.mineru_api_key is None:
+            self.mineru_api_key = os.environ.get("MINERU_API_KEY")
+        if self.paddleocr_api_key is None:
+            self.paddleocr_api_key = os.environ.get("PADDLEOCR_API_KEY")
+
+
 class TracingConfig(BaseModel):
     """Configuration for observability."""
 
@@ -104,6 +125,7 @@ class HarnessConfig(BaseModel):
     tool: ToolConfig = Field(default_factory=ToolConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     search: SearchConfig = Field(default_factory=SearchConfig)
+    pdf: PdfConfig = Field(default_factory=PdfConfig)
     tracing: TracingConfig = Field(default_factory=TracingConfig)
     verbose: bool = False
 
