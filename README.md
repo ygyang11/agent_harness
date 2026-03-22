@@ -1,396 +1,175 @@
-# Agent Harness
+<p align="center">
+  <img src="docs/images/banner.svg" alt="Agent Harness" width="600">
+</p>
 
-**A complete, extensible Python framework for building AI agents and multi-agent systems.**
+<p align="center">
+  <b>Lightweight, Easy-to-use, and Extensible Agent Framework</b>
+</p>
 
-![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
-![License MIT](https://img.shields.io/badge/license-MIT-green)
-![Tests Passing](https://img.shields.io/badge/tests-passing-brightgreen)
+<p align="center">
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="License MIT">
+  <a href="README_ZH.md"><img src="https://img.shields.io/badge/📄_中文文档-click-lightgrey" alt="中文文档"></a>
+</p>
 
-Agent Harness provides production-ready primitives for single-agent workflows, multi-agent orchestration, tool use, memory management, and LLM provider abstraction — all in a clean, async-first API.
+Build AI agents your way — from a simple tool-calling assistant to multi-agent
+parallel workflows. Agent Harness provides production-ready building blocks for
+tool use, context management, and orchestration, with every component designed
+to be understood, modified, and extended.
 
----
-
-## Features
-
-### 🤖 Agent Types
-- **ReActAgent** — Reason + Act loop with automatic tool invocation
-- **PlanAgent** — Plan → Execute → Synthesize with dynamic replanning
-- **ConversationalAgent** — Single-turn LLM calls for chat, summarization, and analysis
-
-### 🔧 Tool System
-- **`@tool` decorator** — Auto-generates JSON Schema from type hints and docstrings
-- **ToolRegistry & ToolExecutor** — Concurrent execution with timeout and error handling
-- **Built-in tools** — File I/O, HTTP requests, Python execution, directory listing
-
-### 💭 Memory
-- **ShortTermMemory** — Sliding-window or token-limited conversation buffer
-- **WorkingMemory** — Key-value scratchpad for intermediate reasoning state
-- **LongTermMemory** — Semantic vector search with pluggable embedding functions
-
-### 🔀 Orchestration
-- **Pipeline** — Sequential agent chains with conditional steps and input transforms
-- **DAGOrchestrator** — Parallel execution graph with dependency resolution and cycle detection
-- **AgentRouter** — Intent-based routing via callables or regex patterns
-- **AgentTeam** — Multi-agent collaboration (supervisor, debate, round-robin modes)
-
-### 📡 LLM Providers
-- **OpenAIProvider** — GPT models with streaming support
-- **AnthropicProvider** — Claude models with native tool-use format
-- **RetryableLLM** — Exponential backoff with configurable retry policies
-- **FallbackChain** — Automatic provider failover
-- **RateLimiter** — Token-bucket rate limiting
-
-### 🔍 Observability
-- **EventBus** — Wildcard event subscriptions across all components
-- **Tracer & Span** — Structured tracing with parent-child span relationships
-- **Exporters** — Console (colored) and JSON Lines file export
+> **No magic, no lock-in. Clone it, hack it, make it yours.**
 
 ---
 
-## Architecture
+## Highlights
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  Orchestration    Pipeline │ DAG │ Router │ Team            │
-├─────────────────────────────────────────────────────────────┤
-│  Agent            ReActAgent │ PlanAgent │ ConversationalAgent
-├─────────────────────────────────────────────────────────────┤
-│  Context          AgentContext │ StateManager │ Variables    │
-├─────────────────────────────────────────────────────────────┤
-│  Memory           ShortTerm │ Working │ LongTerm            │
-├──────────────────────────┬──────────────────────────────────┤
-│  Tool                    │  LLM                             │
-│  @tool │ Registry │      │  OpenAI │ Anthropic │            │
-│  Executor │ Builtins     │  Retry │ Fallback │ RateLimiter  │
-├──────────────────────────┴──────────────────────────────────┤
-│  Core             Message │ Event │ Config │ Errors         │
-├─────────────────────────────────────────────────────────────┤
-│  Tracing          Tracer │ Span │ Console/JSON Exporters    │
-└─────────────────────────────────────────────────────────────┘
-```
+### Get Started in Minutes
 
-| Layer | Purpose |
-|---|---|
-| **Orchestration** | Compose agents into pipelines, DAGs, routers, and collaborative teams. |
-| **Agent** | Reasoning strategies — ReAct loops, plan-and-execute, or direct conversation. |
-| **Context** | Execution state, scoped variables, and state machine transitions per agent. |
-| **Memory** | Conversation history, working scratchpad, and semantic long-term retrieval. |
-| **Tool** | Declarative tool definitions with concurrent, sandboxed execution. |
-| **LLM** | Provider abstraction with retry, rate-limiting, and fallback chains. |
-| **Core** | Shared primitives — messages, events, configuration, typed errors. |
-| **Tracing** | Structured spans and exporters for debugging and monitoring agent runs. |
+⚡ **Simple Agent API** — Define tools with `@tool`, create an agent, call `run()`. A working agent in under 10 lines of code.
+
+🔧 **Zero-Boilerplate Tools** — The `@tool` decorator auto-generates Tool JSON Schema from type hints and docstrings. Sync and async functions both work out of the box.
+
+🧩 **Hackable by Design** — Clean abstractions, no hidden magic. Every component — agents, tools, memory, LLM providers — can be subclassed, swapped, or rewritten to fit your needs.
+
+### Scale to Complex Workflows
+
+🤖 **Agent Patterns** — `ReActAgent` for tool-calling loops, `PlanAndExecuteAgent` for multi-step task decomposition with replanning, `ConversationalAgent` for direct LLM interaction.
+
+🔀 **Orchestration Modes** — Chain agents in a `Pipeline`, run them in parallel with `DAGOrchestrator`, dispatch by intent with `AgentRouter`, or collaborate as an `AgentTeam` (supervisor / debate / round-robin).
+
+🧱 **Structured Context** — Conversation buffer, working scratchpad, and long-term knowledge retrieval — agents build and maintain the context they need across steps.
+
+### Production Ready
+
+🔍 **Built-in Tracing** — Every LLM call, tool invocation, and reasoning step is traced automatically with span hierarchy. Console and JSON exporters included.
+
+🌐 **Provider Agnostic** — OpenAI and Anthropic supported out of the box, with built-in retry, rate limiting, and fallback chains. Swap providers without changing agent code.
+
+⚙️ **Flexible Configuration** — YAML config for all components, environment variable overrides, per-agent customization.
 
 ---
 
 ## Quick Start
 
-### Installation
+### 1. Setup
 
 ```bash
+git clone https://github.com/yourname/Agent-Harness.git
+cd Agent-Harness
+
+# Create environment (choose one)
+conda env create -f environment.yml    # conda
+# or: python -m venv .venv && source .venv/bin/activate
+# or: uv venv && source .venv/bin/activate
+
 pip install -e ".[dev]"
 ```
 
-### Minimal Example
+### 2. Configure
+
+Create a `config.yaml` (see [config_example.yaml](config_example.yaml) for all options):
+
+```yaml
+llm:
+  provider: openai
+  model: gpt-5.4
+  api_key: sk-...
+  base_url: https://api.openai.com/v1
+  reasoning_effort: high
+  # ...
+```
+
+> All values can be overridden via environment variables with `HARNESS_` prefix (e.g. `HARNESS_LLM_MODEL`).
+
+### 3. Run an Example
+
+```bash
+python examples/react_agent.py           # ReAct agent with tool calling
+python examples/react_agent.py --stream  # streaming mode
+```
+
+### 4. Build Your Own Agent
 
 ```python
 import asyncio
 from agent_harness import ReActAgent, tool, HarnessConfig
-from agent_harness.llm import LLM
 
 @tool
-async def search_web(query: str) -> str:
-    """Search the web for information."""
-    return f"Top result for '{query}': Python is a versatile programming language."
-
-async def main():
-    config = HarnessConfig.load("config.yaml")
-    agent = ReActAgent(name="researcher", llm=LLM(config), tools=[search_web], config=config)
-
-    result = await agent.run("What is Python?")
-    print(result.output)
-
-asyncio.run(main())
-```
-
-Set your API key and run:
-
-```bash
-export OPENAI_API_KEY="sk-..."
-python example.py
-```
-
----
-
-## Core Concepts
-
-### Agents
-
-Three built-in agent types cover the most common reasoning strategies:
-
-```python
-from agent_harness import ReActAgent, PlanAgent, ConversationalAgent
-
-# ReAct: Think → Act → Observe loop
-react = ReActAgent(name="react", llm=llm, tools=[search_web])
-
-# Plan-and-Execute: Plan → Execute each step → Synthesize
-planner = PlanAgent(name="planner", llm=llm, tools=[search_web], allow_replan=True)
-
-# Conversational: Single LLM call, no tools
-chat = ConversationalAgent(name="chat", llm=llm)
-```
-
-All agents inherit from `BaseAgent` and share a common interface: `await agent.run(input) -> AgentResult`.
-
-### Tools
-
-Define tools with the `@tool` decorator. Type hints and docstrings are automatically converted to JSON Schema for LLM function calling:
-
-```python
-from agent_harness import tool
-
-@tool(name="calculator", description="Evaluate a math expression")
 def calculate(expression: str) -> str:
     """Evaluate a math expression.
 
     Args:
-        expression: A valid Python math expression.
+        expression: A valid Python math expression like '2 + 3 * 4'.
     """
     return str(eval(expression))
+
+async def main():
+    config = HarnessConfig.load("config.yaml")
+    agent = ReActAgent(
+        name="assistant",
+        tools=[calculate],
+        config=config,
+    )
+    result = await agent.run("What is (42 * 37 + 15) / 3?")
+    print(result.output)
+    print(f"Steps: {result.step_count}, Tokens: {result.usage.total_tokens}")
+
+asyncio.run(main())
 ```
 
-Both sync and async functions are supported. Parameters support `str`, `int`, `float`, `bool`, `list`, and `dict` types.
+---
 
-### LLM Providers
+## Architecture
 
-Swap providers without changing agent code:
+<p align="center">
+  <img src="docs/images/architecture.svg" alt="Architecture" width="700">
+</p>
 
-```python
-from agent_harness import HarnessConfig
-from agent_harness.llm import LLM
+### Built-in Observability
 
-config = HarnessConfig.load("config.yaml")
-llm = LLM(config)  # provider auto-resolved from config.llm.provider
+Every LLM call, tool invocation, and reasoning step is traced automatically:
+
 ```
-
-Add resilience with retry and fallback:
-
-```python
-from agent_harness.llm.retry import RetryableLLM, RetryPolicy, FallbackChain
-
-resilient = RetryableLLM(openai_llm, policy=RetryPolicy(max_retries=3))
-fallback = FallbackChain(providers=[openai_llm, anthropic_llm])
-```
-
-### Memory
-
-Three memory types serve different purposes:
-
-```python
-from agent_harness.memory import ShortTermMemory, WorkingMemory
-
-# Conversation buffer (sliding window or token-limited)
-short_term = ShortTermMemory(max_messages=50, strategy="sliding_window")
-
-# Key-value scratchpad for reasoning state
-working = WorkingMemory()
-working.set("plan", "Step 1: Search → Step 2: Analyze → Step 3: Report")
-working.set("current_step", "Step 1")
-print(working.to_prompt_string())
-```
-
-For semantic search, use `LongTermMemory` with a vector store and embedding function:
-
-```python
-from agent_harness.memory import LongTermMemory
-from agent_harness.memory.storage.numpy import NumpyVectorStore
-
-ltm = LongTermMemory(store=NumpyVectorStore(), embedding_fn=embed)
-await ltm.add("Important finding", metadata={"source": "paper1"})
-results = await ltm.query("related topic", top_k=5)
-```
-
-### Orchestration
-
-Compose agents into complex workflows:
-
-```python
-from agent_harness.orchestration import Pipeline, PipelineStep
-
-pipeline = Pipeline(steps=[
-    PipelineStep(agent=researcher),
-    PipelineStep(
-        agent=writer,
-        transform=lambda x: f"Write an article based on: {x}",
-    ),
-    PipelineStep(
-        agent=editor,
-        condition=lambda x: len(x) > 100,  # skip if output is short
-    ),
-])
-result = await pipeline.run("Latest advances in AI safety")
-```
-
-Other orchestration patterns:
-
-```python
-from agent_harness.orchestration import DAGOrchestrator, DAGNode, AgentRouter, Route, AgentTeam
-
-# Parallel DAG — nodes without dependencies run concurrently
-dag = DAGOrchestrator(nodes=[
-    DAGNode(id="search", agent=searcher),
-    DAGNode(id="analyze", agent=analyzer, dependencies=["search"]),
-    DAGNode(id="report", agent=reporter, dependencies=["analyze"]),
-])
-
-# Intent-based routing
-router = AgentRouter(
-    routes=[
-        Route(agent=coder, condition=r"code|program|function"),
-        Route(agent=researcher, condition=lambda x: "search" in x.lower()),
-    ],
-    fallback=general_agent,
-)
-
-# Multi-agent team (supervisor, debate, or round-robin)
-team = AgentTeam(
-    agents=[researcher, analyst, writer],
-    mode="supervisor",
-)
-```
-
-### Context
-
-`AgentContext` bundles memory, state, variables, and events. Use `fork()` to create child contexts for sub-agents that share global state but maintain independent execution:
-
-```python
-from agent_harness.context import AgentContext
-
-parent_ctx = AgentContext.create(config=config)
-parent_ctx.variables.set("task", "research AI safety", scope=Scope.GLOBAL)
-
-# Child shares long-term memory, global variables, and event bus
-# but gets fresh short-term memory, working memory, and state
-child_ctx = parent_ctx.fork(name="sub-agent")
+▶ [agent] agent.assistant (start)
+  input: What's the weather in Paris and Tokyo? Also, what is the population of France divided by 4?
+  ✓ [internal] step.1 (9073.0ms)
+    agent: assistant
+    • llm_call {agent=assistant, message_count=2}
+    • tool_call {agent=assistant, tool=get_weather, args={'city': 'Paris'}}
+    • tool_call {agent=assistant, tool=get_weather, args={'city': 'Tokyo'}}
+    • tool_call {agent=assistant, tool=get_population, args={'country': 'France'}}
+    • tool_result {content='Paris: 17°C, rainy'}
+    • tool_result {content='Tokyo: 20°C, partly cloudy'}
+    • tool_result {content='68 million'}
+  ✓ [internal] step.2 (1464.4ms)
+    agent: assistant
+    • llm_call {agent=assistant, message_count=6}
+    • tool_call {agent=assistant, tool=calculate, args={'expression': '68_000_000/4'}}
+    • tool_result {content='17000000.0'}
+  ✓ [internal] step.3 (2119.9ms)
+    agent: assistant
+    • llm_call {agent=assistant, message_count=8}
+✓ [agent] agent.assistant (12659.1ms)
 ```
 
 ---
 
 ## Examples
 
-| File | Description |
-|---|---|
-| `react_agent.py` | Basic ReAct agent with custom tools and event logging |
-| `plan_and_execute.py` | PlanAgent that breaks down complex research tasks |
-| `multi_agent_pipeline.py` | Sequential pipeline: researcher → writer → editor |
-| `agent_team.py` | Supervisor-mode team collaboration with shared context |
-| `deep_research.py` | DAG orchestration for parallel research and synthesis |
+The `examples/` directory contains ready-to-run scripts covering core capabilities:
 
-Run any example:
-
-```bash
-export OPENAI_API_KEY="sk-..."
-python examples/react_agent.py
-```
+- **[react_agent.py](examples/react_agent.py)** — ReAct reasoning loop with custom tools, supporting both generate and stream modes
+- **[plan_and_execute.py](examples/plan_and_execute.py)** — Automatic task decomposition into steps, step-by-step execution with tools, and dynamic replanning
+- **[multi_agent_pipeline.py](examples/multi_agent_pipeline.py)** — Three orchestration patterns in one file: sequential Pipeline, parallel DAG, and intent-based Router
+- **[agent_team.py](examples/agent_team.py)** — Multi-agent collaboration with supervisor, debate, and round-robin modes
+- **[deep_research.py](examples/deep_research.py)** — Full-stack orchestration: planning → parallel research (DAG) → cross-review (Team) → final synthesis
 
 ---
 
-## Configuration
+## Contributing
 
-### YAML Config
+Agent Harness is built to be extended. If you've built a useful tool, added a new agent pattern,
+or improved an existing module, we'd love to see it contributed.
 
-Create a `config.yaml` to configure all components declaratively:
+All contributions are welcome — just keep the existing style and have fun building.
 
-```yaml
-llm:
-  provider: openai
-  model: gpt-4o
-  temperature: 0.7
-  max_tokens: 4096
-  timeout: 120.0
-
-tool:
-  max_concurrency: 5
-  default_timeout: 30.0
-  sandbox_enabled: false
-
-memory:
-  short_term_max_messages: 50
-  short_term_max_tokens: 8000
-  short_term_strategy: sliding_window
-
-tracing:
-  enabled: true
-  exporter: json_file
-  export_path: ./traces
-
-verbose: false
-```
-
-Load it in code:
-
-```python
-config = HarnessConfig.load("config.yaml")
-```
-
-### Environment Variables
-
-All settings can be overridden via environment variables:
-
-| Variable | Description | Default |
-|---|---|---|
-| `OPENAI_API_KEY` | OpenAI API key | — |
-| `ANTHROPIC_API_KEY` | Anthropic API key | — |
-| `HARNESS_LLM_PROVIDER` | LLM provider (`openai`, `anthropic`) | `openai` |
-| `HARNESS_LLM_MODEL` | Model name | `gpt-4o` |
-| `HARNESS_LLM_TEMPERATURE` | Sampling temperature | `0.7` |
-| `HARNESS_LLM_MAX_TOKENS` | Max output tokens | `4096` |
-| `HARNESS_VERBOSE` | Enable verbose logging | `false` |
-| `HARNESS_TRACING_ENABLED` | Enable tracing | `true` |
-
-Environment variables take precedence when using `HarnessConfig.from_env()`. Merge configs with `config.merge(other)`.
-
----
-
-## Project Structure
-
-```
-agent_harness/
-├── src/agent_harness/
-│   ├── agent/            # BaseAgent, ReActAgent, PlanAgent, ConversationalAgent
-│   ├── context/          # AgentContext, StateManager, ContextVariables
-│   ├── core/             # Message, Event, Config, Errors, Registry
-│   ├── llm/              # OpenAI/Anthropic providers, retry, fallback
-│   ├── memory/           # ShortTerm, Working, LongTerm, vector storage
-│   ├── orchestration/    # Pipeline, DAG, Router, Team
-│   ├── prompt/           # PromptTemplate, PromptBuilder, PromptLibrary
-│   ├── tool/             # @tool decorator, Registry, Executor, builtins
-│   ├── tracing/          # Tracer, Span, Console/JSON exporters
-│   └── utils/            # Shared utilities
-├── tests/                # Test suite
-├── examples/             # Usage examples
-├── pyproject.toml        # Package configuration
-└── environment.yml       # Conda environment
-```
-
----
-
-## Testing
-
-```bash
-pip install -e ".[dev]"
-pytest tests/ -v
-```
-
-Lint and type-check:
-
-```bash
-ruff check src/
-mypy src/
-```
-
----
-
-## License
-
-MIT
+This project is released under the [MIT License](LICENSE).

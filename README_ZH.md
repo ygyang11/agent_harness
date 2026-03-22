@@ -1,396 +1,176 @@
-# Agent Harness
+<p align="center">
+  <img src="docs/images/banner.svg" alt="Agent Harness" width="600">
+</p>
 
-**一个完整、可扩展的 Python 框架，用于构建 AI Agent 与多 Agent 系统。**
+<p align="center">
+  <b>轻量 · 易上手 · 可扩展的 AI Agent 框架</b>
+</p>
 
-![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
-![License MIT](https://img.shields.io/badge/license-MIT-green)
-![Tests Passing](https://img.shields.io/badge/tests-passing-brightgreen)
+<p align="center">
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="License MIT">
+  <a href="README.md"><img src="https://img.shields.io/badge/📄_English-click-lightgrey" alt="English"></a>
+</p>
 
-Agent Harness 提供了一组面向生产可用的基础能力，用于构建单 Agent 工作流、多 Agent 编排、工具调用、记忆管理以及 LLM Provider 抽象，并以干净的 async-first API 统一呈现。
+十行代码，跑通一个能调用工具的 Agent。
+再组合几个组件，就是一套 Multi-Agent 并行工作流。
 
----
+Agent-Harness 备好了构建 Agent 要用的东西 ——
+工具调用、上下文管理、任务编排 ——
+剩下的事情是你的：读懂它，改造它，搭出你自己的框架。
 
-## 特性
-
-### 🤖 Agent 类型
-- **ReActAgent** — 支持自动工具调用的 Reason + Act 循环
-- **PlanAgent** — Plan → Execute → Synthesize，并支持动态重规划
-- **ConversationalAgent** — 单轮 LLM 调用，适用于聊天、总结与分析
-
-### 🔧 工具体系
-- **`@tool` decorator** — 基于类型注解与 docstring 自动生成 JSON Schema
-- **ToolRegistry & ToolExecutor** — 支持并发执行、超时控制与错误处理
-- **Built-in tools** — 内置文件 I/O、HTTP 请求、Python 执行、目录遍历
-
-### 💭 记忆系统
-- **ShortTermMemory** — 滑动窗口或 token 限制的会话缓冲区
-- **WorkingMemory** — 用于中间推理状态的键值 scratchpad
-- **LongTermMemory** — 结合可插拔 embedding 函数的语义向量检索
-
-### 🔀 编排能力
-- **Pipeline** — 支持条件步骤与输入变换的顺序 Agent 链
-- **DAGOrchestrator** — 支持依赖解析与环检测的并行执行图
-- **AgentRouter** — 基于 callable 或 regex pattern 的意图路由
-- **AgentTeam** — 多 Agent 协作模式（supervisor、debate、round-robin）
-
-### 📡 LLM Provider
-- **OpenAIProvider** — 支持 GPT系列 与 streaming
-- **AnthropicProvider** — 支持 Claude 模型及原生 tool-use 格式
-- **RetryableLLM** — 可配置重试策略的指数退避封装
-- **FallbackChain** — 自动 Provider 故障切换
-- **RateLimiter** — 基于令牌桶的请求限流
-
-### 🔍 可观测性
-- **EventBus** — 支持 wildcard 订阅的统一事件系统
-- **Tracer & Span** — 带父子层级关系的结构化 tracing
-- **Exporters** — 支持 Console（彩色）与 JSON Lines 文件导出
+> **No magic, no lock-in. Clone it, hack it, make it yours.**
 
 ---
 
-## 架构
+## 亮点
 
-```text
-┌─────────────────────────────────────────────────────────────┐
-│  Orchestration    Pipeline │ DAG │ Router │ Team            │
-├─────────────────────────────────────────────────────────────┤
-│  Agent            ReActAgent │ PlanAgent │ ConversationalAgent
-├─────────────────────────────────────────────────────────────┤
-│  Context          AgentContext │ StateManager │ Variables    │
-├─────────────────────────────────────────────────────────────┤
-│  Memory           ShortTerm │ Working │ LongTerm            │
-├──────────────────────────┬──────────────────────────────────┤
-│  Tool                    │  LLM                             │
-│  @tool │ Registry │      │  OpenAI │ Anthropic │            │
-│  Executor │ Builtins     │  Retry │ Fallback │ RateLimiter  │
-├──────────────────────────┴──────────────────────────────────┤
-│  Core             Message │ Event │ Config │ Errors         │
-├─────────────────────────────────────────────────────────────┤
-│  Tracing          Tracer │ Span │ Console/JSON Exporters    │
-└─────────────────────────────────────────────────────────────┘
-```
+### 即刻上手
 
-| 层级 | 作用 |
-|---|---|
-| **Orchestration** | 将 Agent 组织为 pipeline、DAG、router 与协作团队。 |
-| **Agent** | 承载推理策略：ReAct 循环、plan-and-execute 或直接对话。 |
-| **Context** | 管理每个 Agent 的执行状态、作用域变量与状态机迁移。 |
-| **Memory** | 管理会话历史、工作 scratchpad 以及长期语义检索。 |
-| **Tool** | 提供声明式工具定义与并发、可控的执行能力。 |
-| **LLM** | 提供统一 Provider 抽象，并支持重试、限流与降级链。 |
-| **Core** | 提供共享基础原语：message、event、config、typed errors。 |
-| **Tracing** | 提供结构化 span 与导出器，用于调试与监控 Agent 运行。 |
+⚡ **极简 API** — `@tool` 定义工具，创建 Agent，调用 `run()`。十行代码，直接跑。
+
+🔧 **零模板代码** — `@tool` 装饰器根据你的类型注解和 docstring，自动生成 Tool JSON Schema。同步异步都行。
+
+🧩 **天生可改** — 没有藏起来的魔法。Agent、工具、记忆、LLM Provider，每个组件都能继承、替换、重写。
+
+### 从简单到复杂
+
+🤖 **多种 Agent 模式** — `ReActAgent` 工具调用循环，`PlanAndExecuteAgent` 多步任务拆解 + 动态重规划，`ConversationalAgent` 直接对话。
+
+🔀 **四种编排方式** — `Pipeline` 顺序链式，`DAGOrchestrator` 并行依赖图，`AgentRouter` 意图路由，`AgentTeam` 多 Agent 协作（supervisor / debate / round-robin）。
+
+🧱 **结构化上下文** — 对话缓冲、工作暂存、长期知识检索。Agent 每一步都在构建自己需要的上下文。
+
+### 为生产环境打造
+
+🔍 **内置 Tracing** — LLM 调用、工具执行、推理步骤，全部自动追踪，Span 层级清晰可查。支持控制台和 JSON 导出。
+
+🌐 **不绑定供应商** — 开箱支持 OpenAI 和 Anthropic，内置重试、限流、降级链。换 Provider 不用改 Agent 代码。
+
+⚙️ **灵活配置** — 一个 YAML 文件管理所有组件，环境变量随时覆盖，也可以按 Agent 单独定制。
 
 ---
 
 ## 快速开始
 
-### 安装
+### 1. 环境准备
 
 ```bash
+git clone https://github.com/yourname/Agent-Harness.git
+cd Agent-Harness
+
+# 选一种方式创建环境
+conda env create -f environment.yml    # conda
+# 或: python -m venv .venv && source .venv/bin/activate
+# 或: uv venv && source .venv/bin/activate
+
 pip install -e ".[dev]"
 ```
 
-### 最小示例
+### 2. 配置
+
+创建 `config.yaml`（完整选项见 [config_example.yaml](config_example.yaml)）：
+
+```yaml
+llm:
+  provider: openai
+  model: gpt-5.4
+  api_key: sk-...
+  base_url: https://api.openai.com/v1
+  reasoning_effort: high
+  # ...
+```
+
+> 所有配置项都能用 `HARNESS_` 前缀的环境变量覆盖，比如 `HARNESS_LLM_MODEL`。
+
+### 3. 运行示例
+
+```bash
+python examples/react_agent.py           # ReAct Agent + 工具调用
+python examples/react_agent.py --stream  # 流式输出
+```
+
+### 4. 写你自己的 Agent
 
 ```python
 import asyncio
 from agent_harness import ReActAgent, tool, HarnessConfig
-from agent_harness.llm import LLM
 
 @tool
-async def search_web(query: str) -> str:
-    """Search the web for information."""
-    return f"Top result for '{query}': Python is a versatile programming language."
-
-async def main():
-    config = HarnessConfig.load("config.yaml")
-    agent = ReActAgent(name="researcher", llm=LLM(config), tools=[search_web], config=config)
-
-    result = await agent.run("What is Python?")
-    print(result.output)
-
-asyncio.run(main())
-```
-
-设置 API Key 后运行：
-
-```bash
-export OPENAI_API_KEY="sk-..."
-python example.py
-```
-
----
-
-## 核心概念
-
-### Agents
-
-框架内置了三种 Agent 类型，覆盖最常见的推理策略：
-
-```python
-from agent_harness import ReActAgent, PlanAgent, ConversationalAgent
-
-# ReAct: Think → Act → Observe 循环
-react = ReActAgent(name="react", llm=llm, tools=[search_web])
-
-# Plan-and-Execute: Plan → Execute each step → Synthesize
-planner = PlanAgent(name="planner", llm=llm, tools=[search_web], allow_replan=True)
-
-# Conversational: 单次 LLM 调用，不使用工具
-chat = ConversationalAgent(name="chat", llm=llm)
-```
-
-所有 Agent 都继承自 `BaseAgent`，共享统一接口：`await agent.run(input) -> AgentResult`。
-
-### Tools
-
-通过 `@tool` decorator 可以快速定义工具。类型注解与 docstring 会自动转换为 LLM function calling 所需的 JSON Schema：
-
-```python
-from agent_harness import tool
-
-@tool(name="calculator", description="Evaluate a math expression")
 def calculate(expression: str) -> str:
     """Evaluate a math expression.
 
     Args:
-        expression: A valid Python math expression.
+        expression: A valid Python math expression like '2 + 3 * 4'.
     """
     return str(eval(expression))
+
+async def main():
+    config = HarnessConfig.load("config.yaml")
+    agent = ReActAgent(
+        name="assistant",
+        tools=[calculate],
+        config=config,
+    )
+    result = await agent.run("What is (42 * 37 + 15) / 3?")
+    print(result.output)
+    print(f"Steps: {result.step_count}, Tokens: {result.usage.total_tokens}")
+
+asyncio.run(main())
 ```
 
-框架同时支持同步与异步函数；参数支持 `str`、`int`、`float`、`bool`、`list` 与 `dict`。
+---
 
-### LLM Providers
+## 架构
 
-无需修改 Agent 代码即可切换底层 Provider：
+<p align="center">
+  <img src="docs/images/architecture.svg" alt="Architecture" width="700">
+</p>
 
-```python
-from agent_harness import HarnessConfig
-from agent_harness.llm import LLM
+### 内置 Tracing
 
-config = HarnessConfig.load("config.yaml")
-llm = LLM(config)  # 根据 config.llm.provider 自动匹配 provider
+LLM 调用、工具执行、推理过程，跑的时候自动追踪：
+
 ```
-
-还可以叠加重试与降级能力：
-
-```python
-from agent_harness.llm.retry import RetryableLLM, RetryPolicy, FallbackChain
-
-resilient = RetryableLLM(openai_llm, policy=RetryPolicy(max_retries=3))
-fallback = FallbackChain(providers=[openai_llm, anthropic_llm])
-```
-
-### Memory
-
-三种记忆分别承担不同职责：
-
-```python
-from agent_harness.memory import ShortTermMemory, WorkingMemory
-
-# 会话缓冲区（滑动窗口或 token 限制）
-short_term = ShortTermMemory(max_messages=50, strategy="sliding_window")
-
-# 面向推理状态的键值 scratchpad
-working = WorkingMemory()
-working.set("plan", "Step 1: Search → Step 2: Analyze → Step 3: Report")
-working.set("current_step", "Step 1")
-print(working.to_prompt_string())
-```
-
-对于语义检索，可使用 `LongTermMemory` 配合向量存储与 embedding 函数：
-
-```python
-from agent_harness.memory import LongTermMemory
-from agent_harness.memory.storage.numpy import NumpyVectorStore
-
-ltm = LongTermMemory(store=NumpyVectorStore(), embedding_fn=embed)
-await ltm.add("Important finding", metadata={"source": "paper1"})
-results = await ltm.query("related topic", top_k=5)
-```
-
-### Orchestration
-
-可以将多个 Agent 组合为复杂工作流：
-
-```python
-from agent_harness.orchestration import Pipeline, PipelineStep
-
-pipeline = Pipeline(steps=[
-    PipelineStep(agent=researcher),
-    PipelineStep(
-        agent=writer,
-        transform=lambda x: f"Write an article based on: {x}",
-    ),
-    PipelineStep(
-        agent=editor,
-        condition=lambda x: len(x) > 100,  # 如果输出过短则跳过
-    ),
-])
-result = await pipeline.run("Latest advances in AI safety")
-```
-
-其他编排模式：
-
-```python
-from agent_harness.orchestration import DAGOrchestrator, DAGNode, AgentRouter, Route, AgentTeam
-
-# 并行 DAG —— 无依赖节点可并发执行
-dag = DAGOrchestrator(nodes=[
-    DAGNode(id="search", agent=searcher),
-    DAGNode(id="analyze", agent=analyzer, dependencies=["search"]),
-    DAGNode(id="report", agent=reporter, dependencies=["analyze"]),
-])
-
-# 基于意图的路由
-router = AgentRouter(
-    routes=[
-        Route(agent=coder, condition=r"code|program|function"),
-        Route(agent=researcher, condition=lambda x: "search" in x.lower()),
-    ],
-    fallback=general_agent,
-)
-
-# 多 Agent 团队（supervisor、debate 或 round-robin）
-team = AgentTeam(
-    agents=[researcher, analyst, writer],
-    mode="supervisor",
-)
-```
-
-### Context
-
-`AgentContext` 将 memory、state、variables 与 events 统一封装。通过 `fork()` 可以为子 Agent 创建共享全局状态、但独立执行过程的上下文：
-
-```python
-from agent_harness.context import AgentContext
-
-parent_ctx = AgentContext.create(config=config)
-parent_ctx.variables.set("task", "research AI safety", scope=Scope.GLOBAL)
-
-# 子上下文共享 long-term memory、global variables 与 event bus
-# 但拥有独立的 short-term memory、working memory 与 state
-child_ctx = parent_ctx.fork(name="sub-agent")
+▶ [agent] agent.assistant (start)
+  input: What's the weather in Paris and Tokyo? Also, what is the population of France divided by 4?
+  ✓ [internal] step.1 (9073.0ms)
+    agent: assistant
+    • llm_call {agent=assistant, message_count=2}
+    • tool_call {agent=assistant, tool=get_weather, args={'city': 'Paris'}}
+    • tool_call {agent=assistant, tool=get_weather, args={'city': 'Tokyo'}}
+    • tool_call {agent=assistant, tool=get_population, args={'country': 'France'}}
+    • tool_result {content='Paris: 17°C, rainy'}
+    • tool_result {content='Tokyo: 20°C, partly cloudy'}
+    • tool_result {content='68 million'}
+  ✓ [internal] step.2 (1464.4ms)
+    agent: assistant
+    • llm_call {agent=assistant, message_count=6}
+    • tool_call {agent=assistant, tool=calculate, args={'expression': '68_000_000/4'}}
+    • tool_result {content='17000000.0'}
+  ✓ [internal] step.3 (2119.9ms)
+    agent: assistant
+    • llm_call {agent=assistant, message_count=8}
+✓ [agent] agent.assistant (12659.1ms)
 ```
 
 ---
 
 ## 示例
 
-| 文件 | 说明 |
-|---|---|
-| `react_agent.py` | 使用自定义工具与事件日志的基础 ReAct Agent |
-| `plan_and_execute.py` | 使用 PlanAgent 对复杂研究任务进行拆解与执行 |
-| `multi_agent_pipeline.py` | 顺序 Pipeline：researcher → writer → editor |
-| `agent_team.py` | 共享上下文下的 supervisor 模式团队协作 |
-| `deep_research.py` | 使用 DAG 并行执行研究与综合的完整示例 |
+`examples/` 包含覆盖核心能力的示例：
 
-运行任意示例：
-
-```bash
-export OPENAI_API_KEY="sk-..."
-python examples/react_agent.py
-```
+- **[react_agent.py](examples/react_agent.py)** — ReAct 推理循环 + 自定义工具
+- **[plan_and_execute.py](examples/plan_and_execute.py)** — 自动拆解任务，逐步调用工具执行，支持动态重规划
+- **[multi_agent_pipeline.py](examples/multi_agent_pipeline.py)** — 一个文件跑通三种编排：Pipeline 顺序、DAG 并行、Router 路由
+- **[agent_team.py](examples/agent_team.py)** — 多 Agent 协作：supervisor、debate、round-robin
+- **[deep_research.py](examples/deep_research.py)** — 完整流程：规划 → 并行研究（DAG）→ 交叉评审（Team）→ 综合报告
 
 ---
 
-## 配置
+## 参与贡献
 
-### YAML Config
+写了好用的 Tool、新的 Agent 模式、或者改进了某个模块？欢迎贡献。
 
-你可以通过 `config.yaml` 以声明式方式统一配置所有组件：
+保持现有风格就好，enjoy building.
 
-```yaml
-llm:
-  provider: openai
-  model: gpt-4o
-  temperature: 0.7
-  max_tokens: 4096
-  timeout: 120.0
-
-tool:
-  max_concurrency: 5
-  default_timeout: 30.0
-  sandbox_enabled: false
-
-memory:
-  short_term_max_messages: 50
-  short_term_max_tokens: 8000
-  short_term_strategy: sliding_window
-
-tracing:
-  enabled: true
-  exporter: json_file
-  export_path: ./traces
-
-verbose: false
-```
-
-在代码中加载：
-
-```python
-config = HarnessConfig.load("config.yaml")
-```
-
-### Environment Variables
-
-所有设置都可以通过环境变量覆盖：
-
-| 变量 | 说明 | 默认值 |
-|---|---|---|
-| `OPENAI_API_KEY` | OpenAI API key | — |
-| `ANTHROPIC_API_KEY` | Anthropic API key | — |
-| `HARNESS_LLM_PROVIDER` | LLM provider（`openai`、`anthropic`） | `openai` |
-| `HARNESS_LLM_MODEL` | 模型名称 | `gpt-4o` |
-| `HARNESS_LLM_TEMPERATURE` | 采样温度 | `0.7` |
-| `HARNESS_LLM_MAX_TOKENS` | 最大输出 token 数 | `4096` |
-| `HARNESS_VERBOSE` | 是否开启详细日志 | `false` |
-| `HARNESS_TRACING_ENABLED` | 是否开启 tracing | `true` |
-
-使用 `HarnessConfig.from_env()` 时，环境变量优先级更高。多个配置对象可通过 `config.merge(other)` 合并。
-
----
-
-## 项目结构
-
-```text
-agent_harness/
-├── src/agent_harness/
-│   ├── agent/            # BaseAgent, ReActAgent, PlanAgent, ConversationalAgent
-│   ├── context/          # AgentContext, StateManager, ContextVariables
-│   ├── core/             # Message, Event, Config, Errors, Registry
-│   ├── llm/              # OpenAI/Anthropic providers, retry, fallback
-│   ├── memory/           # ShortTerm, Working, LongTerm, vector storage
-│   ├── orchestration/    # Pipeline, DAG, Router, Team
-│   ├── prompt/           # PromptTemplate, PromptBuilder, PromptLibrary
-│   ├── tool/             # @tool decorator, Registry, Executor, builtins
-│   ├── tracing/          # Tracer, Span, Console/JSON exporters
-│   └── utils/            # Shared utilities
-├── tests/                # Test suite
-├── examples/             # Usage examples
-├── pyproject.toml        # Package configuration
-└── environment.yml       # Conda environment
-```
-
----
-
-## 测试
-
-```bash
-pip install -e ".[dev]"
-pytest tests/ -v
-```
-
-Lint 与类型检查：
-
-```bash
-ruff check src/
-mypy src/
-```
-
----
-
-## License
-
-MIT
+本项目基于 [MIT License](LICENSE) 开源。
