@@ -7,18 +7,18 @@
 # --- LLM Provider ---
 llm:
   provider: "openai"            # "openai" | "anthropic"
-  model: "gpt-x"                # Model identifier (e.g. gpt-5.2, claude-4.5-sonnet)
+  model: "gpt-x"                # Model identifier (e.g. gpt-5.4, claude-4.6-opus)
   temperature:                  # Sampling temperature (0.0 – 2.0)
   max_tokens:                   # Maximum output tokens
   api_key: ""                   # API key (overrides env var)
-  base_url: ""                  # Custom API endpoint (leave empty for default)
+  base_url: ""                  # Custom API endpoint
                                 # Examples:
                                 #   OpenAI-compatible: "https://api.openai.com/v1"
                                 #   Azure OpenAI:     "https://<resource>.openai.azure.com/"
   timeout: 180.0                # Request timeout in seconds
   max_retries: 5                # Max retry attempts for rate-limit errors
   retry_delay: 1.0              # Initial retry delay in seconds (exponential backoff)
-  reasoning_effort: ""          # "low" | "medium" | "high" | "..."  (leave empty to use model default)
+  reasoning_effort: ""          # "low" | "medium" | "high" | "xhigh/max.."  (leave empty to use model default)
 
 # --- Tool Execution ---
 tool:
@@ -36,14 +36,14 @@ memory:
 # --- Search ---
 search:
   provider: "tavily"            # "tavily" | "serpapi"
-  tavily_api_key: ""            # Tavily API key (overrides TAVILY_API_KEY env var)
-  serpapi_api_key: ""           # SerpAPI key (overrides SERPAPI_API_KEY env var)
+  tavily_api_key: ""            # Tavily API key
+  serpapi_api_key: ""           # SerpAPI key
 
 # --- PDF Parsing ---
 pdf:
   provider: "mineru"            # "mineru" | "paddleocr"
-  mineru_api_key: ""            # MinerU API key (overrides MINERU_API_KEY env var)
-  paddleocr_api_key: ""         # PaddleOCR API key (overrides PADDLEOCR_API_KEY env var)
+  mineru_api_key: ""            # MinerU API key
+  paddleocr_api_key: ""         # PaddleOCR API key
 
 # --- Tracing & Observability ---
 tracing:
