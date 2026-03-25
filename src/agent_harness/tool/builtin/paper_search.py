@@ -1,0 +1,358 @@
+"""Academic paper search tool supporting arXiv and Semantic Scholar."""
+from __future__ import annotations
+
+import asyncio
+import json as _json
+import logging
+import re
+from dataclasses import dataclass
+from typing import Any
+from urllib.parse import urlencode
+from xml.etree.ElementTree import Element, fromstring
+
+from agent_harness.core.config import resolve_paper_config
+from agent_harness.tool.decorator import tool
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class PaperSearchConfig:
+    arxiv_request_delay: float = 3.0
+    max_retries: int = 3
+    retry_base_delay: float = 1.0
+
+
+_CFG = PaperSearchConfig()
+_ATOM_NS = "{http://www.w3.org/2005/Atom}"
+_ARXIV_NS = "{http://arxiv.org/schemas/atom}"
+_ARXIV_API = "http://export.arxiv.org/api/query"
+_S2_API = "https://api.semanticscholar.org/graph/v1"
+
+_NEW_ID_RE = re.compile(r"^\d{4}\.\d{4,5}(v\d+)?$")
+_OLD_ID_RE = re.compile(r"^[a-z-]+(\.[A-Z]{2})?/\d{7}(v\d+)?$")
+
+_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
+)
+
+_S2_SEARCH_FIELDS = (
+    "paperId,title,authors,abstract,year,venue,"
+    "externalIds,openAccessPdf,citationCount,publicationTypes"
+)
+
+
+# ---------------------------------------------------------------------------
+# Retry helper
+# ---------------------------------------------------------------------------
+
+
+async def _api_get_with_retry(
+    url: str,
+    headers: dict[str, str] | None = None,
+    timeout: int = 30,
+) -> tuple[int, str]:
+    """GET with exponential backoff on 429 and transient errors."""
+    import aiohttp
+
+    hdrs = {"User-Agent": _USER_AGENT}
+    if headers:
+        hdrs.update(headers)
+
+    last_exc: Exception | None = None
+    for attempt in range(_CFG.max_retries + 1):
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    url, headers=hdrs, timeout=aiohttp.ClientTimeout(total=timeout)
+                ) as resp:
+                    body = await resp.text()
+                    if resp.status != 429:
+                        return resp.status, body
+                    logger.warning(
+                        "Rate limited (429), retry %d/%d", attempt + 1, _CFG.max_retries
+                    )
+        except (aiohttp.ClientError, TimeoutError) as exc:
+            last_exc = exc
+            logger.warning(
+                "Request failed (%s), retry %d/%d", exc, attempt + 1, _CFG.max_retries
+            )
+
+        if attempt < _CFG.max_retries:
+            delay = _CFG.retry_base_delay * (2**attempt)
+            await asyncio.sleep(delay)
+
+    if last_exc:
+        raise last_exc
+    return 429, "Rate limit exceeded after retries"
+
+
+# ---------------------------------------------------------------------------
+# arXiv helpers
+# ---------------------------------------------------------------------------
+
+
+def _looks_like_arxiv_id(value: str) -> bool:
+    cleaned = re.sub(r"^(https?://)?arxiv\.org/(abs|pdf)/", "", value)
+    cleaned = re.sub(r"(\.pdf)?$", "", cleaned)
+    return bool(_NEW_ID_RE.match(cleaned) or _OLD_ID_RE.match(cleaned))
+
+
+def _normalize_arxiv_id(arxiv_id: str) -> str:
+    cleaned = re.sub(r"^(https?://)?arxiv\.org/(abs|pdf)/", "", arxiv_id)
+    cleaned = re.sub(r"(\.pdf)?$", "", cleaned)
+    cleaned = re.sub(r"v\d+$", "", cleaned)
+    return cleaned
+
+
+def _build_arxiv_query_url(query: str, max_results: int, start: int = 0) -> str:
+    params: dict[str, str | int] = {"max_results": max_results, "start": start}
+    if _looks_like_arxiv_id(query) or query.startswith("id:"):
+        raw_id = query.removeprefix("id:")
+        params["id_list"] = _normalize_arxiv_id(raw_id)
+    else:
+        params["search_query"] = f"all:{query}"
+        params["sortBy"] = "relevance"
+        params["sortOrder"] = "descending"
+    return f"{_ARXIV_API}?{urlencode(params)}"
+
+
+async def _fetch_xml(url: str) -> Element:
+    status, text = await _api_get_with_retry(url)
+    if status != 200:
+        raise RuntimeError(f"arXiv API returned HTTP {status}")
+    return fromstring(text)
+
+
+def _parse_arxiv_entry(entry: Element) -> dict[str, Any]:
+    def _text(tag: str) -> str:
+        el = entry.find(f"{_ATOM_NS}{tag}")
+        return " ".join((el.text or "").split()) if el is not None else ""
+
+    raw_id = _text("id")
+    arxiv_id = _normalize_arxiv_id(raw_id)
+
+    authors: list[str] = []
+    for a in entry.findall(f"{_ATOM_NS}author"):
+        name_el = a.find(f"{_ATOM_NS}name")
+        if name_el is not None:
+            authors.append(" ".join((name_el.text or "").split()))
+
+    categories: list[str] = [
+        c.get("term", "") for c in entry.findall(f"{_ARXIV_NS}primary_category")
+    ]
+    categories.extend(
+        c.get("term", "")
+        for c in entry.findall(f"{_ATOM_NS}category")
+        if c.get("term", "") not in categories
+    )
+
+    return {
+        "arxiv_id": arxiv_id,
+        "title": _text("title"),
+        "authors": authors,
+        "abstract": _text("summary"),
+        "published": _text("published")[:10],
+        "updated": _text("updated")[:10],
+        "categories": categories,
+        "pdf_url": f"https://arxiv.org/pdf/{arxiv_id}.pdf",
+        "abs_url": f"https://arxiv.org/abs/{arxiv_id}",
+    }
+
+
+async def _search_arxiv(query: str, max_results: int) -> str:
+    url = _build_arxiv_query_url(query, max_results)
+    root = await _fetch_xml(url)
+
+    entries = root.findall(f"{_ATOM_NS}entry")
+    if not entries:
+        return f"No arXiv results found for: {query}"
+
+    papers = [_parse_arxiv_entry(e) for e in entries]
+    return _format_paper_results(papers, source="arxiv")
+
+
+# ---------------------------------------------------------------------------
+# Semantic Scholar helpers
+# ---------------------------------------------------------------------------
+
+
+async def _search_semantic_scholar(
+    query: str, max_results: int, api_key: str | None
+) -> str:
+    params = urlencode({
+        "query": query,
+        "limit": min(max_results, 100),
+        "fields": _S2_SEARCH_FIELDS,
+    })
+    url = f"{_S2_API}/paper/search?{params}"
+
+    extra_headers: dict[str, str] = {}
+    if api_key:
+        extra_headers["x-api-key"] = api_key
+
+    try:
+        status, body = await _api_get_with_retry(url, headers=extra_headers)
+    except Exception as exc:
+        return f"Error: Semantic Scholar request failed: {exc}"
+
+    if status == 429:
+        return (
+            "Error: Semantic Scholar rate limit exceeded after retries. "
+            "Try again later, reduce max_results, or use source='arxiv' instead."
+        )
+    if status != 200:
+        return (
+            f"Error: Semantic Scholar API returned HTTP {status}. "
+            f"Detail: {body[:200]}"
+        )
+
+    data = _json.loads(body)
+
+    total = data.get("total", 0)
+    papers_raw = data.get("data", [])
+    if not papers_raw:
+        return f"No results found for: {query}"
+
+    papers = [_parse_s2_paper(p) for p in papers_raw]
+    result = _format_paper_results(papers, source="semantic_scholar")
+
+    if total > len(papers_raw):
+        result += f"\n\n(Showing {len(papers_raw)} of {total} total results)"
+
+    return result
+
+
+def _parse_s2_paper(paper: dict[str, Any]) -> dict[str, Any]:
+    external_ids = paper.get("externalIds") or {}
+    authors = [a.get("name", "") for a in (paper.get("authors") or [])]
+    pdf_info = paper.get("openAccessPdf") or {}
+
+    return {
+        "s2_id": paper.get("paperId", ""),
+        "title": paper.get("title", ""),
+        "authors": authors,
+        "abstract": paper.get("abstract") or "",
+        "year": paper.get("year"),
+        "venue": paper.get("venue", ""),
+        "doi": external_ids.get("DOI", ""),
+        "arxiv_id": external_ids.get("ArXiv", ""),
+        "citation_count": paper.get("citationCount", 0),
+        "pdf_url": pdf_info.get("url", ""),
+        "publication_types": paper.get("publicationTypes") or [],
+        "source": "semantic_scholar",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Formatting
+# ---------------------------------------------------------------------------
+
+
+def _format_paper_results(papers: list[dict[str, Any]], source: str) -> str:
+    lines: list[str] = []
+    for i, p in enumerate(papers, 1):
+        parts = [f"{i}. {p.get('title', 'Untitled')}"]
+
+        if p.get("arxiv_id"):
+            parts.append(f"   arXiv ID: {p['arxiv_id']}")
+        if p.get("s2_id"):
+            parts.append(f"   S2 ID: {p['s2_id']}")
+        if p.get("doi"):
+            parts.append(f"   DOI: {p['doi']}")
+
+        authors = p.get("authors", [])
+        if authors:
+            display = ", ".join(authors[:5])
+            if len(authors) > 5:
+                display += f" et al. ({len(authors)} authors)"
+            parts.append(f"   Authors: {display}")
+
+        if p.get("published"):
+            parts.append(f"   Published: {p['published']}")
+        elif p.get("year"):
+            parts.append(f"   Year: {p['year']}")
+
+        if p.get("venue"):
+            parts.append(f"   Venue: {p['venue']}")
+        if p.get("categories"):
+            parts.append(f"   Categories: {', '.join(p['categories'][:5])}")
+        if p.get("citation_count") is not None and p["citation_count"] > 0:
+            parts.append(f"   Citations: {p['citation_count']}")
+        if p.get("publication_types"):
+            parts.append(f"   Type: {', '.join(p['publication_types'])}")
+
+        abstract = p.get("abstract", "")
+        if abstract:
+            parts.append(f"   Abstract: {abstract}")
+
+        if p.get("pdf_url"):
+            parts.append(f"   PDF: {p['pdf_url']}")
+        if p.get("abs_url"):
+            parts.append(f"   Page: {p['abs_url']}")
+
+        lines.append("\n".join(parts))
+
+    footer_lines = ["\n---"]
+    footer_lines.append("Next steps:")
+    footer_lines.append(
+        '- Use `paper_fetch(paper_id="<arXiv ID or DOI>", mode="metadata")` '
+        "for detailed info on a specific paper."
+    )
+    footer_lines.append(
+        '- Use `paper_fetch(paper_id="<arXiv ID or DOI>", mode="full")` '
+        "to get the complete paper content."
+    )
+    if source == "arxiv":
+        footer_lines.append(
+            "- For non-arXiv papers (IEEE, ACM, ScienceDirect), "
+            'use `paper_search(query="...", source="semantic_scholar")`.'
+        )
+    lines.append("\n".join(footer_lines))
+    return "\n\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Tool entry point
+# ---------------------------------------------------------------------------
+
+
+@tool
+async def paper_search(
+    query: str,
+    source: str = "arxiv",
+    max_results: int = 10,
+) -> str:
+    """Search for academic papers and return structured metadata.
+
+    Searches academic paper databases and returns structured results
+    including title, authors, abstract, and links.
+
+    For arXiv papers, use source="arxiv" (default). For papers from
+    IEEE, ACM Digital Library, ScienceDirect, PubMed, or other
+    publishers, use source="semantic_scholar" which indexes 200M+
+    papers across all major academic databases.
+
+    Args:
+        query: Search query string or arXiv ID (e.g. "2301.07041").
+        source: "arxiv" (default) or "semantic_scholar" for IEEE/ACM/ScienceDirect/PubMed etc.
+        max_results: Number of results to return (1-100, default 10).
+    """
+    if not query.strip():
+        return "Error: query cannot be empty"
+
+    max_results = max(1, min(max_results, 100))
+
+    if source == "arxiv":
+        return await _search_arxiv(query, max_results)
+    elif source == "semantic_scholar":
+        cfg = resolve_paper_config(None)
+        api_key = cfg.semantic_scholar_api_key
+        return await _search_semantic_scholar(query, max_results, api_key)
+    else:
+        return (
+            f"Error: unknown source {source!r}. "
+            f"Use 'arxiv' for arXiv papers, or 'semantic_scholar' "
+            f"for IEEE/ACM/ScienceDirect and other publishers."
+        )

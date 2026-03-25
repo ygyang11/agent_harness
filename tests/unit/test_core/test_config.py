@@ -7,10 +7,12 @@ from agent_harness.core.config import (
     HarnessConfig,
     LLMConfig,
     MemoryConfig,
+    PaperConfig,
     SearchConfig,
     ToolConfig,
     TracingConfig,
     resolve_llm_config,
+    resolve_paper_config,
     resolve_search_config,
     resolve_tool_config,
 )
@@ -219,3 +221,27 @@ class TestResolveConfigHelpers:
         cfg = HarnessConfig(search=SearchConfig(provider="serpapi"))
         assert resolve_search_config(cfg) is cfg.search
         assert resolve_search_config(cfg.search) is cfg.search
+
+    def test_resolve_paper_config(self) -> None:
+        cfg = HarnessConfig(paper=PaperConfig(semantic_scholar_api_key="k"))
+        assert resolve_paper_config(cfg) is cfg.paper
+        assert resolve_paper_config(cfg.paper) is cfg.paper
+
+
+class TestPaperConfig:
+    def test_defaults(self) -> None:
+        cfg = PaperConfig()
+        assert cfg.semantic_scholar_api_key is None
+
+    def test_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("SEMANTIC_SCHOLAR_API_KEY", "test-key")
+        cfg = PaperConfig()
+        assert cfg.semantic_scholar_api_key == "test-key"
+
+    def test_blank_to_none(self) -> None:
+        cfg = PaperConfig(semantic_scholar_api_key="  ")
+        assert cfg.semantic_scholar_api_key is None
+
+    def test_in_harness(self) -> None:
+        cfg = HarnessConfig()
+        assert isinstance(cfg.paper, PaperConfig)

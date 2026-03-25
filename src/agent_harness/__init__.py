@@ -5,7 +5,15 @@ from agent_harness.utils.logging_config import setup_logging
 setup_logging()
 
 from agent_harness.core.message import Message, Role, ToolCall, ToolResult
-from agent_harness.core.config import HarnessConfig, LLMConfig, MemoryConfig, TracingConfig, ToolConfig, SearchConfig
+from agent_harness.core.config import (
+    HarnessConfig,
+    LLMConfig,
+    MemoryConfig,
+    PaperConfig,
+    SearchConfig,
+    ToolConfig,
+    TracingConfig,
+)
 from agent_harness.core.event import Event, EventBus
 from agent_harness.core.errors import HarnessError
 from agent_harness.llm.base import BaseLLM
@@ -33,6 +41,7 @@ __all__ = [
     "TracingConfig",
     "ToolConfig",
     "SearchConfig",
+    "PaperConfig",
     "Event",
     "EventBus",
     "HarnessError",

@@ -45,6 +45,12 @@ pdf:
   mineru_api_key: ""            # MinerU API key
   paddleocr_api_key: ""         # PaddleOCR API key
 
+# --- Academic Paper Search ---
+paper:
+  semantic_scholar_api_key: "" # Semantic Scholar API key (optional, for higher rate limits)
+                               # Without key: shared pool; With key: 1 req/s baseline
+                               # Request at: https://www.semanticscholar.org/product/api#api-key
+
 # --- Tracing & Observability ---
 tracing:
   enabled: true                 # Enable tracing

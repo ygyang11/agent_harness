@@ -32,6 +32,7 @@ class _EnvVars:
     HARNESS_LLM_BASE_URL = "HARNESS_LLM_BASE_URL"
     HARNESS_VERBOSE = "HARNESS_VERBOSE"
     HARNESS_TRACING_ENABLED = "HARNESS_TRACING_ENABLED"
+    SEMANTIC_SCHOLAR_API_KEY = "SEMANTIC_SCHOLAR_API_KEY"
 
 
 class LLMConfig(BaseModel):
@@ -129,12 +130,45 @@ class PdfConfig(BaseModel):
             self.paddleocr_api_key = os.environ.get(_EnvVars.PADDLEOCR_API_KEY)
 
 
+class PaperConfig(BaseModel):
+    """Configuration for academic paper tools."""
+
+    semantic_scholar_api_key: str | None = None
+
+    @field_validator("semantic_scholar_api_key", mode="before")
+    @classmethod
+    def _blank_to_none(cls, value: str | None) -> str | None:
+        if isinstance(value, str) and value.strip() == "":
+            return None
+        return value
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.semantic_scholar_api_key is None:
+            self.semantic_scholar_api_key = os.environ.get(
+                _EnvVars.SEMANTIC_SCHOLAR_API_KEY
+            )
+
+
 class TracingConfig(BaseModel):
     """Configuration for observability."""
 
     enabled: bool = True
     exporter: str = "console"  # console | json_file
     export_path: str = "./traces"
+
+
+class SkillConfig(BaseModel):
+    """Configuration for the skill system."""
+
+    dirs: list[str] = Field(default_factory=lambda: ["skills"])
+
+    @field_validator("dirs")
+    @classmethod
+    def _validate_dirs(cls, v: list[str]) -> list[str]:
+        for d in v:
+            if Path(d).name != "skills":
+                raise ValueError(f"Skill directory must end with 'skills', got: {d!r}")
+        return v
 
 
 class HarnessConfig(BaseModel):
@@ -145,7 +179,9 @@ class HarnessConfig(BaseModel):
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     search: SearchConfig = Field(default_factory=SearchConfig)
     pdf: PdfConfig = Field(default_factory=PdfConfig)
+    paper: PaperConfig = Field(default_factory=PaperConfig)
     tracing: TracingConfig = Field(default_factory=TracingConfig)
+    skill: SkillConfig = Field(default_factory=SkillConfig)
     verbose: bool = False
 
     _instance: ClassVar[HarnessConfig | None] = None
@@ -270,6 +306,14 @@ def resolve_pdf_config(config: HarnessConfig | PdfConfig | None) -> PdfConfig:
     if isinstance(config, PdfConfig):
         return config
     return HarnessConfig.get().pdf
+
+
+def resolve_paper_config(config: HarnessConfig | PaperConfig | None) -> PaperConfig:
+    if isinstance(config, HarnessConfig):
+        return config.paper
+    if isinstance(config, PaperConfig):
+        return config
+    return HarnessConfig.get().paper
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
