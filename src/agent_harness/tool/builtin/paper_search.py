@@ -294,9 +294,9 @@ def _format_paper_results(papers: list[dict[str, Any]], source: str) -> str:
     footer_lines = ["\n---"]
     footer_lines.append(
         '- Use `paper_fetch(paper_id="<arXiv ID or DOI>", mode="<metadata|full>")` '
-        ': `mode="metadata"` usually overlaps with the core info already shown '
-        'here (title/authors/abstract/ids..), while `mode="full"` retrieves the '
-        "full paper body text."
+        'only when needed: search results already include core metadata, so avoid '
+        'calling `mode="metadata"` again unless specific missing fields are '
+        'required; use `mode="full"` when full paper body text is needed.'
     )
     if source == "arxiv":
         footer_lines.append(
