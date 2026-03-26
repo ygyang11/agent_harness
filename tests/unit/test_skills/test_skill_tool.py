@@ -1,88 +1,247 @@
 from __future__ import annotations
 
+import shutil
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
-from agent_harness.skills.loader import SkillLoader
-from agent_harness.tool.builtin.skill_tool import create_load_skill
+from agent_harness.core.config import HarnessConfig, SkillConfig
+from agent_harness.tool.builtin import BUILTIN_TOOLS
+from agent_harness.tool.builtin.skill_tool import SkillTool, skill_tool
+
+from tests.unit.test_skills.conftest import _write_skill
 
 
-class TestCreateLoadSkill:
-    def test_description_contains_catalog(self, skills_dir: Path) -> None:
-        loader = SkillLoader([skills_dir])
-        tool = create_load_skill(loader)
-        assert "<available_skills>" in tool.description
-        assert "pdf" in tool.description
-        assert "frontend" in tool.description
+@pytest.fixture
+def restore_harness_config() -> Iterator[None]:
+    original = HarnessConfig._instance
+    try:
+        yield
+    finally:
+        HarnessConfig._instance = original
 
-    def test_schema_parameters(self, skills_dir: Path) -> None:
-        loader = SkillLoader([skills_dir])
-        tool = create_load_skill(loader)
-        schema = tool.get_schema()
+
+@pytest.fixture(autouse=True)
+def reset_skill_tool_cache() -> Iterator[None]:
+    skill_tool._loader = None
+    skill_tool._loader_dirs_key = None
+    skill_tool._loader_state_key = None
+    skill_tool._state_key_checked_at = 0.0
+    try:
+        yield
+    finally:
+        skill_tool._loader = None
+        skill_tool._loader_dirs_key = None
+        skill_tool._loader_state_key = None
+        skill_tool._state_key_checked_at = 0.0
+
+
+class TestSkillToolRegistration:
+    def test_builtin_tools_include_skill_tool(self) -> None:
+        names = [tool.name for tool in BUILTIN_TOOLS]
+        assert "skill_tool" in names
+
+
+class TestSkillToolSchema:
+    def test_description_contains_catalog(
+        self,
+        skills_dir: Path,
+        restore_harness_config: None,
+    ) -> None:
+        HarnessConfig._instance = HarnessConfig(skill=SkillConfig(dirs=[str(skills_dir)]))
+        schema = skill_tool.get_schema()
+        assert "<available_skills>" in schema.description
+        assert "pdf" in schema.description
+        assert "frontend" in schema.description
+
+    def test_schema_parameters(
+        self,
+        skills_dir: Path,
+        restore_harness_config: None,
+    ) -> None:
+        HarnessConfig._instance = HarnessConfig(skill=SkillConfig(dirs=[str(skills_dir)]))
+        schema = skill_tool.get_schema()
         props = schema.parameters["properties"]
         assert "skill_name" in props
         assert "args" in props
         assert "skill_name" in schema.parameters["required"]
 
+    def test_schema_with_empty_skills(
+        self,
+        empty_skills_dir: Path,
+        restore_harness_config: None,
+    ) -> None:
+        HarnessConfig._instance = HarnessConfig(skill=SkillConfig(dirs=[str(empty_skills_dir)]))
+        schema = skill_tool.get_schema()
+        assert "(no skills available)" in schema.description
 
-class TestLoadSkillExecution:
+
+class TestSkillToolExecution:
     @pytest.fixture
-    def tool(self, skills_dir: Path):  # noqa: ANN201
-        loader = SkillLoader([skills_dir])
-        return create_load_skill(loader)
+    def tool(
+        self,
+        skills_dir: Path,
+        restore_harness_config: None,
+    ) -> SkillTool:
+        HarnessConfig._instance = HarnessConfig(skill=SkillConfig(dirs=[str(skills_dir)]))
+        return skill_tool
 
-    async def test_execute_returns_skill_content(self, tool) -> None:  # noqa: ANN001
+    async def test_execute_returns_skill_content(self, tool: SkillTool) -> None:
         result = await tool.execute(skill_name="pdf")
         assert '<skill-loaded name="pdf">' in result
         assert "Do PDF things." in result
         assert "</skill-loaded>" in result
 
-    async def test_execute_not_found(self, tool) -> None:  # noqa: ANN001
+    async def test_execute_not_found(self, tool: SkillTool) -> None:
         result = await tool.execute(skill_name="nonexistent")
         assert "not found" in result.lower()
-        assert "pdf" in result
 
-    async def test_execute_empty_name(self, tool) -> None:  # noqa: ANN001
+    async def test_execute_empty_name(self, tool: SkillTool) -> None:
         result = await tool.execute(skill_name="")
         assert "Error" in result
 
-    async def test_arguments_substitution(self, tmp_path: Path) -> None:
+    async def test_arguments_substitution(
+        self,
+        tmp_path: Path,
+        restore_harness_config: None,
+    ) -> None:
         root = tmp_path / "skills"
         sd = root / "tpl"
         sd.mkdir(parents=True)
         (sd / "SKILL.md").write_text(
             "---\nname: tpl\ndescription: Template skill.\n---\n\nHello $ARGUMENTS!\n"
         )
-        loader = SkillLoader([root])
-        tool = create_load_skill(loader)
+        HarnessConfig._instance = HarnessConfig(skill=SkillConfig(dirs=[str(root)]))
+        tool = skill_tool
         result = await tool.execute(skill_name="tpl", args="world")
         assert "Hello world!" in result
 
-    async def test_resource_hints(self, tool) -> None:  # noqa: ANN001
+    async def test_resource_hints(self, tool: SkillTool) -> None:
         result = await tool.execute(skill_name="pdf")
         assert "scripts/" in result
         assert "extract.py" in result
 
 
-class TestGetBuiltinToolsIntegration:
-    def test_includes_load_skill(self, skills_dir: Path) -> None:
-        from agent_harness.tool.builtin import get_builtin_tools
+class TestSkillToolAutoRefresh:
+    async def test_schema_refresh_after_adding_skill_subdir(
+        self,
+        tmp_path: Path,
+        restore_harness_config: None,
+    ) -> None:
+        root = tmp_path / "skills"
+        root.mkdir()
+        first = root / "first"
+        first.mkdir()
+        (first / "SKILL.md").write_text(
+            "---\nname: first\ndescription: first skill\n---\n\nbody\n",
+            encoding="utf-8",
+        )
+        HarnessConfig._instance = HarnessConfig(skill=SkillConfig(dirs=[str(root)]))
+        schema_before = skill_tool.get_schema()
+        assert "first" in schema_before.description
+        assert "second" not in schema_before.description
 
-        tools = get_builtin_tools(skill_dirs=[skills_dir])
-        names = [t.name for t in tools]
-        assert "load_skill" in names
+        second = root / "second"
+        second.mkdir()
+        (second / "SKILL.md").write_text(
+            "---\nname: second\ndescription: second skill\n---\n\nbody\n",
+            encoding="utf-8",
+        )
 
-    def test_no_load_skill_when_empty(self, empty_skills_dir: Path) -> None:
-        from agent_harness.tool.builtin import get_builtin_tools
+        skill_tool._state_key_checked_at = 0.0
+        schema_after = skill_tool.get_schema()
+        assert "second" in schema_after.description
 
-        tools = get_builtin_tools(skill_dirs=[empty_skills_dir])
-        names = [t.name for t in tools]
-        assert "load_skill" not in names
+    async def test_execute_refresh_after_adding_skill_subdir(
+        self,
+        tmp_path: Path,
+        restore_harness_config: None,
+    ) -> None:
+        root = tmp_path / "skills"
+        root.mkdir()
+        HarnessConfig._instance = HarnessConfig(skill=SkillConfig(dirs=[str(root)]))
+        _ = skill_tool.get_schema()
 
-    def test_no_load_skill_when_dir_missing(self, tmp_path: Path) -> None:
-        from agent_harness.tool.builtin import get_builtin_tools
+        news = root / "news"
+        news.mkdir()
+        (news / "SKILL.md").write_text(
+            "---\nname: news\ndescription: news skill\n---\n\nhello\n",
+            encoding="utf-8",
+        )
 
-        tools = get_builtin_tools(skill_dirs=[tmp_path / "nope" / "skills"])
-        names = [t.name for t in tools]
-        assert "load_skill" not in names
+        skill_tool._state_key_checked_at = 0.0
+        result = await skill_tool.execute(skill_name="news")
+        assert '<skill-loaded name="news">' in result
+
+
+class TestSkillToolTTL:
+    async def test_schema_skips_stat_within_ttl(
+        self,
+        tmp_path: Path,
+        restore_harness_config: None,
+    ) -> None:
+        root = tmp_path / "skills"
+        _write_skill(root, "alpha", "skill alpha", "body alpha")
+        HarnessConfig._instance = HarnessConfig(skill=SkillConfig(dirs=[str(root)]))
+
+        schema1 = skill_tool.get_schema()
+        assert "- alpha:" in schema1.description
+
+        _write_skill(root, "bravo", "skill bravo", "body bravo")
+        schema2 = skill_tool.get_schema()
+        assert "- bravo:" not in schema2.description
+
+        skill_tool._state_key_checked_at = 0.0
+        schema3 = skill_tool.get_schema()
+        assert "- bravo:" in schema3.description
+
+    async def test_execute_not_found_force_refreshes_loader(
+        self,
+        tmp_path: Path,
+        restore_harness_config: None,
+    ) -> None:
+        root = tmp_path / "skills"
+        _write_skill(root, "ephemeral", "temp", "body")
+        HarnessConfig._instance = HarnessConfig(skill=SkillConfig(dirs=[str(root)]))
+
+        result = await skill_tool.execute(skill_name="ephemeral")
+        assert "body" in result
+
+        shutil.rmtree(root / "ephemeral")
+
+        result = await skill_tool.execute(skill_name="nonexistent")
+        assert "not found" in result.lower()
+
+        schema = skill_tool.get_schema()
+        assert "ephemeral" not in schema.description
+
+
+class TestSkillToolXmlEscape:
+    async def test_arguments_xml_escaped(
+        self,
+        tmp_path: Path,
+        restore_harness_config: None,
+    ) -> None:
+        root = tmp_path / "skills"
+        _write_skill(root, "esc", "escape test", "Input: $ARGUMENTS")
+        HarnessConfig._instance = HarnessConfig(skill=SkillConfig(dirs=[str(root)]))
+
+        result = await skill_tool.execute(
+            skill_name="esc", args='</skill-loaded><injected attr="x">'
+        )
+        assert "&lt;/skill-loaded&gt;" in result
+        assert "&lt;injected" in result
+        assert "</skill-loaded>" in result.rstrip().split("\n")[-1]
+
+    async def test_skill_name_xml_escaped(
+        self,
+        tmp_path: Path,
+        restore_harness_config: None,
+    ) -> None:
+        root = tmp_path / "skills"
+        _write_skill(root, 'a"b', "test", "body")
+        HarnessConfig._instance = HarnessConfig(skill=SkillConfig(dirs=[str(root)]))
+
+        result = await skill_tool.execute(skill_name='a"b')
+        assert 'name="a&quot;b"' in result

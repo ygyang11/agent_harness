@@ -164,6 +164,7 @@ LLM 调用、工具执行、推理过程，跑的时候自动追踪：
 - **[multi_agent_pipeline.py](examples/multi_agent_pipeline.py)** — 一个文件跑通三种编排：Pipeline 顺序、DAG 并行、Router 路由
 - **[agent_team.py](examples/agent_team.py)** — 多 Agent 协作：supervisor、debate、round-robin
 - **[deep_research.py](examples/deep_research.py)** — 完整流程：规划 → 并行研究（DAG）→ 交叉评审（Team）→ 综合报告
+- **[skill_demo.py](examples/skill_demo.py)** — 展示如何使用 `skills` 来做特定任务，以文本润色为例
 
 ---
 

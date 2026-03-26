@@ -53,11 +53,51 @@ class _SkillMeta(NamedTuple):
 class SkillLoader:
     """Loads skills from multiple directories using progressive disclosure."""
 
+    # Project root: src/agent_harness/skills/loader.py -> src/agent_harness -> src -> Agent-Harness
+    _PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent.parent.parent
+
     def __init__(self, dirs: list[str | Path]) -> None:
-        self._dirs = [Path(d) for d in dirs]
+        self._dirs = self._resolve_dirs(dirs)
         self._metadata: dict[str, _SkillMeta] = {}
         self._skills: dict[str, Skill] = {}
         self._scan()
+
+
+    @classmethod
+    def _resolve_dirs(cls, dirs: list[str | Path]) -> list[Path]:
+        resolved: list[Path] = []
+        for d in dirs:
+            p = Path(d)
+            if p.is_absolute():
+                resolved.append(p)
+            else:
+                resolved.append(cls._PROJECT_ROOT / p)
+        return resolved
+
+    @classmethod
+    def build_state_key(cls, dirs: list[str | Path]) -> tuple[str, ...]:
+        resolved_dirs = cls._resolve_dirs(dirs)
+        entries: list[str] = []
+
+        for skills_dir in resolved_dirs:
+            if not skills_dir.exists():
+                entries.append(f"DIR|{skills_dir}|missing")
+                continue
+
+            entries.append(f"DIR|{skills_dir}|ok")
+            for entry in sorted(skills_dir.iterdir(), key=lambda p: p.name):
+                if not entry.is_dir():
+                    continue
+                skill_md = entry / "SKILL.md"
+                if not skill_md.exists():
+                    continue
+                try:
+                    stat = skill_md.stat()
+                except OSError:
+                    continue
+                entries.append(f"SKILL|{skill_md}|{stat.st_mtime_ns}|{stat.st_size}")
+
+        return tuple(entries)
 
     @staticmethod
     def _parse_frontmatter(content: str) -> tuple[dict[str, Any], str] | None:
@@ -95,7 +135,12 @@ class SkillLoader:
                 meta, _ = parsed
                 name: str = meta["name"]
                 if name in self._metadata:
-                    logger.debug("Skill '%s' already loaded, skipping %s", name, skill_md)
+                    logger.warning(
+                        "Skill '%s' in %s shadows %s (keeping first occurrence)",
+                        name,
+                        self._metadata[name].path,
+                        skill_md,
+                    )
                     continue
                 extra = {k: v for k, v in meta.items() if k not in ("name", "description")}
                 self._metadata[name] = _SkillMeta(

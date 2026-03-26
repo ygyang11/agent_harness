@@ -1,12 +1,18 @@
 """Tests for agent_harness.agent.react — ReActAgent with MockLLM."""
 from __future__ import annotations
 
+from collections.abc import Iterator
+from pathlib import Path
+
 import pytest
 
+from agent_harness.agent.base import BASE_PROMPTS
 from agent_harness.agent.react import ReActAgent
+from agent_harness.core.config import HarnessConfig, SkillConfig
 from agent_harness.core.errors import MaxStepsExceededError
 from agent_harness.core.message import Message, ToolCall
 from agent_harness.llm.types import FinishReason, LLMResponse, Usage
+from agent_harness.tool.builtin.skill_tool import skill_tool
 
 from tests.conftest import MockLLM, MockTool
 
@@ -101,3 +107,88 @@ class TestReActMaxSteps:
 
         assert result.step_count == 3
         assert result.output == "Final answer at step 3"
+
+
+@pytest.fixture
+def restore_harness_config() -> Iterator[None]:
+    original = HarnessConfig._instance
+    try:
+        yield
+    finally:
+        HarnessConfig._instance = original
+
+
+@pytest.fixture(autouse=True)
+def reset_skill_tool_cache() -> Iterator[None]:
+    skill_tool._loader = None
+    skill_tool._loader_dirs_key = None
+    skill_tool._loader_state_key = None
+    skill_tool._state_key_checked_at = 0.0
+    try:
+        yield
+    finally:
+        skill_tool._loader = None
+        skill_tool._loader_dirs_key = None
+        skill_tool._loader_state_key = None
+        skill_tool._state_key_checked_at = 0.0
+
+
+@pytest.fixture
+def skills_dir(tmp_path: Path) -> Path:
+    root = tmp_path / "skills"
+    sd = root / "demo"
+    sd.mkdir(parents=True)
+    (sd / "SKILL.md").write_text(
+        "---\nname: demo\ndescription: Demo skill.\n---\n\nDemo body.\n"
+    )
+    return root
+
+
+class TestSkillPromptSupplement:
+    def test_supplement_appended_when_skill_tool_present(
+        self,
+        skills_dir: Path,
+        restore_harness_config: None,
+    ) -> None:
+        HarnessConfig._instance = HarnessConfig(skill=SkillConfig(dirs=[str(skills_dir)]))
+        agent = ReActAgent(name="test", tools=[skill_tool])
+        assert "## Skills" in agent.system_prompt
+        assert "skill_tool" in agent.system_prompt
+
+    def test_no_supplement_without_skill_tool(self) -> None:
+        agent = ReActAgent(name="test", tools=[])
+        assert "## Skills" not in agent.system_prompt
+
+    def test_custom_prompt_gets_supplement(
+        self,
+        skills_dir: Path,
+        restore_harness_config: None,
+    ) -> None:
+        HarnessConfig._instance = HarnessConfig(skill=SkillConfig(dirs=[str(skills_dir)]))
+        agent = ReActAgent(
+            name="test",
+            system_prompt="Custom prompt.",
+            tools=[skill_tool],
+        )
+        assert agent.system_prompt.startswith("Custom prompt.")
+        assert "## Skills" in agent.system_prompt
+
+    def test_custom_prompt_no_supplement_without_skill_tool(self) -> None:
+        agent = ReActAgent(name="test", system_prompt="Custom prompt.", tools=[])
+        assert agent.system_prompt == "Custom prompt."
+
+    async def test_should_inject_consistent_with_supplement(
+        self,
+        skills_dir: Path,
+        restore_harness_config: None,
+    ) -> None:
+        HarnessConfig._instance = HarnessConfig(skill=SkillConfig(dirs=[str(skills_dir)]))
+        agent = ReActAgent(name="test", tools=[skill_tool])
+
+        assert await agent._should_inject_system_prompt() is True
+
+        await agent.context.short_term_memory.add_message(
+            Message.system(agent.system_prompt)
+        )
+
+        assert await agent._should_inject_system_prompt() is False

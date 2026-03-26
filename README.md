@@ -162,6 +162,7 @@ The `examples/` directory contains ready-to-run scripts covering core capabiliti
 - **[multi_agent_pipeline.py](examples/multi_agent_pipeline.py)** — Three orchestration patterns in one file: sequential Pipeline, parallel DAG, and intent-based Router
 - **[agent_team.py](examples/agent_team.py)** — Multi-agent collaboration with supervisor, debate, and round-robin modes
 - **[deep_research.py](examples/deep_research.py)** — Full-stack orchestration: planning → parallel research (DAG) → cross-review (Team) → final synthesis
+- **[skill_demo.py](examples/skill_demo.py)** — Demonstrates how to use `skills` for specific tasks, with a writing refinement example
 
 ---
 

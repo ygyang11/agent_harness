@@ -23,6 +23,24 @@ from agent_harness.agent.hooks import DefaultHooks, resolve_hooks
 
 logger = logging.getLogger(__name__)
 
+BASE_PROMPTS: dict[str, str] = {
+    "skill_supplement": """
+
+## Skills
+
+You have access to a `skill_tool` that loads domain-specific instructions for specialized tasks.
+
+Before responding directly to the user, check if the request matches an available skill in the \
+tool's catalog.
+If a match exists, load the skill first — its instructions provide more thorough and structured \
+guidance than your default behavior.
+
+Rules:
+- Do not skip a matching skill because you believe you can handle the task without it
+- After loading a skill, follow its instructions to complete the task
+- If no skill matches, proceed normally with your available tools and knowledge""",
+}
+
 
 class StepResult(BaseModel):
     """Result of a single agent step."""
@@ -85,6 +103,8 @@ class BaseAgent(ABC, EventEmitter):
         self.llm = llm or create_llm(self.context.config)
         self.hooks = resolve_hooks(hooks, self.context.config)
         self.max_steps = max_steps
+        if tools and self._has_skill_tool(tools):
+            system_prompt = system_prompt + BASE_PROMPTS["skill_supplement"]
         self.system_prompt = system_prompt
         self.use_long_term_memory = use_long_term_memory
         self._stream = stream
@@ -103,6 +123,11 @@ class BaseAgent(ABC, EventEmitter):
         self.set_event_bus(self.context.event_bus)
         self.tool_executor.set_event_bus(self.context.event_bus)
         self.llm.set_event_bus(self.context.event_bus)
+
+    @staticmethod
+    def _has_skill_tool(tools: list[BaseTool]) -> bool:
+        from agent_harness.tool.builtin.skill_tool import SkillTool
+        return any(isinstance(t, SkillTool) for t in tools)
 
     @property
     def tools(self) -> list[BaseTool]:

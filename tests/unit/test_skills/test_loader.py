@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from agent_harness.skills.loader import SkillLoader
@@ -95,6 +96,33 @@ class TestSkillLoaderCatalog:
         assert "pdf" not in loader.list_names()
 
 
+class TestSkillLoaderStateKey:
+    def test_build_state_key_changes_on_add(self, tmp_path: Path) -> None:
+        root = tmp_path / "skills"
+        root.mkdir()
+        before = SkillLoader.build_state_key([root])
+
+        sd = root / "new_skill"
+        sd.mkdir()
+        (sd / "SKILL.md").write_text(
+            "---\nname: new_skill\ndescription: demo\n---\n\nbody\n",
+            encoding="utf-8",
+        )
+
+        after = SkillLoader.build_state_key([root])
+        assert before != after
+
+    def test_build_state_key_changes_on_modify(self, skills_dir: Path) -> None:
+        before = SkillLoader.build_state_key([skills_dir])
+        md = skills_dir / "pdf" / "SKILL.md"
+        md.write_text(
+            "---\nname: pdf\ndescription: Process PDF files.\n---\n\nupdated body\n",
+            encoding="utf-8",
+        )
+        after = SkillLoader.build_state_key([skills_dir])
+        assert before != after
+
+
 class TestSkillListResources:
     def test_list_resources_with_scripts(self, skills_dir: Path) -> None:
         loader = SkillLoader([skills_dir])
@@ -109,3 +137,18 @@ class TestSkillListResources:
         skill = loader.get_skill("frontend")
         assert skill is not None
         assert skill.list_resources() == {}
+
+
+class TestSkillLoaderNameCollisionWarning:
+    def test_duplicate_name_logs_warning(self, tmp_path: Path, caplog: logging.LogCaptureFixture) -> None:
+        dir_a = tmp_path / "a" / "skills"
+        dir_b = tmp_path / "b" / "skills"
+        for d in (dir_a, dir_b):
+            sd = d / "dup"
+            sd.mkdir(parents=True)
+            (sd / "SKILL.md").write_text(
+                "---\nname: dup\ndescription: duplicate\n---\n\nbody\n"
+            )
+        with caplog.at_level(logging.WARNING, logger="agent_harness.skills.loader"):
+            SkillLoader([dir_a, dir_b])
+        assert any("shadows" in record.message for record in caplog.records)

@@ -51,6 +51,13 @@ paper:
                                # Without key: shared pool; With key: 1 req/s baseline
                                # Request at: https://www.semanticscholar.org/product/api#api-key
 
+# --- Skills ---
+skill:
+  dirs:                           # Skill directories to scan (must end with "skills")
+    - "skills"                    # Project root skills/ (default)
+    # - "/path/to/shared/skills"  # Team-shared skills
+    # - "~/.my-agent/skills"      # Personal skills
+
 # --- Tracing & Observability ---
 tracing:
   enabled: true                 # Enable tracing
