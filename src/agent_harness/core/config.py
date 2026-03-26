@@ -11,7 +11,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import yaml
+from dotenv import load_dotenv
 from pydantic import BaseModel, Field, PrivateAttr, field_validator
+
+load_dotenv()
 
 if TYPE_CHECKING:
     from agent_harness.agent.hooks import DefaultHooks
@@ -65,10 +68,10 @@ class LLMConfig(BaseModel):
             }
             env_var = env_map.get(self.provider)
             if env_var:
-                self.api_key = os.environ.get(env_var)
+                self.api_key = os.environ.get(env_var, "").strip() or None
         # Auto-resolve base_url from environment if not set
         if self.base_url is None:
-            self.base_url = os.environ.get(_EnvVars.HARNESS_LLM_BASE_URL)
+            self.base_url = os.environ.get(_EnvVars.HARNESS_LLM_BASE_URL, "").strip() or None
 
 
 class ToolConfig(BaseModel):
@@ -104,9 +107,9 @@ class SearchConfig(BaseModel):
 
     def model_post_init(self, __context: Any) -> None:
         if self.tavily_api_key is None:
-            self.tavily_api_key = os.environ.get(_EnvVars.TAVILY_API_KEY)
+            self.tavily_api_key = os.environ.get(_EnvVars.TAVILY_API_KEY, "").strip() or None
         if self.serpapi_api_key is None:
-            self.serpapi_api_key = os.environ.get(_EnvVars.SERPAPI_API_KEY)
+            self.serpapi_api_key = os.environ.get(_EnvVars.SERPAPI_API_KEY, "").strip() or None
 
 
 class PdfConfig(BaseModel):
@@ -125,9 +128,9 @@ class PdfConfig(BaseModel):
 
     def model_post_init(self, __context: Any) -> None:
         if self.mineru_api_key is None:
-            self.mineru_api_key = os.environ.get(_EnvVars.MINERU_API_KEY)
+            self.mineru_api_key = os.environ.get(_EnvVars.MINERU_API_KEY, "").strip() or None
         if self.paddleocr_api_key is None:
-            self.paddleocr_api_key = os.environ.get(_EnvVars.PADDLEOCR_API_KEY)
+            self.paddleocr_api_key = os.environ.get(_EnvVars.PADDLEOCR_API_KEY, "").strip() or None
 
 
 class PaperConfig(BaseModel):
@@ -144,8 +147,8 @@ class PaperConfig(BaseModel):
 
     def model_post_init(self, __context: Any) -> None:
         if self.semantic_scholar_api_key is None:
-            self.semantic_scholar_api_key = os.environ.get(
-                _EnvVars.SEMANTIC_SCHOLAR_API_KEY
+            self.semantic_scholar_api_key = (
+                os.environ.get(_EnvVars.SEMANTIC_SCHOLAR_API_KEY, "").strip() or None
             )
 
 
