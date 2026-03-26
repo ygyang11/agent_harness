@@ -1,7 +1,6 @@
 """Academic paper fetching tool for metadata and full content retrieval."""
 from __future__ import annotations
 
-import json as _json
 import logging
 from dataclasses import dataclass
 from typing import Any
@@ -9,6 +8,8 @@ from urllib.parse import urlencode
 
 from agent_harness.core.config import resolve_paper_config
 from agent_harness.tool.decorator import tool
+from agent_harness.utils.http_retry import HttpRetryConfig, http_get_with_retry
+from agent_harness.utils.json_utils import parse_json_lenient
 from agent_harness.utils.token_counter import truncate_text_by_tokens
 
 logger = logging.getLogger(__name__)
@@ -110,7 +111,13 @@ async def _fetch_arxiv_metadata(arxiv_id: str) -> str:
     clean_id = _normalize_arxiv_id(arxiv_id)
     ns = "{http://www.w3.org/2005/Atom}"
     url = f"http://export.arxiv.org/api/query?{urlencode({'id_list': clean_id})}"
-    root = await _fetch_xml(url)
+    try:
+        root = await _fetch_xml(url)
+    except Exception as exc:
+        err = str(exc)
+        if err.startswith("arXiv request failed:"):
+            return f"Error: {err}"
+        return f"Error: arXiv request failed: {err}"
 
     entries = root.findall(f"{ns}entry")
     if not entries:
@@ -127,7 +134,6 @@ async def _fetch_arxiv_metadata(arxiv_id: str) -> str:
 
 async def _fetch_s2_metadata(paper_id: str, api_key: str | None) -> str:
     from agent_harness.tool.builtin.paper_search import (
-        _api_get_with_retry,
         _parse_s2_paper,
     )
 
@@ -141,7 +147,11 @@ async def _fetch_s2_metadata(paper_id: str, api_key: str | None) -> str:
         extra_headers["x-api-key"] = api_key
 
     try:
-        status, body = await _api_get_with_retry(url, headers=extra_headers)
+        status, body = await http_get_with_retry(
+            url,
+            headers=extra_headers,
+            retry=HttpRetryConfig(max_attempts=3, base_delay=1.0),
+        )
     except Exception as exc:
         return f"Error: Semantic Scholar request failed: {exc}"
 
@@ -161,7 +171,13 @@ async def _fetch_s2_metadata(paper_id: str, api_key: str | None) -> str:
             f"Error: Semantic Scholar API returned HTTP {status}. Detail: {body[:200]}"
         )
 
-    data = _json.loads(body)
+    try:
+        data_raw = parse_json_lenient(body)
+    except ValueError as exc:
+        return f"Error: failed to parse Semantic Scholar response: {exc}"
+    if not isinstance(data_raw, dict):
+        return "Error: unexpected Semantic Scholar response format"
+    data = data_raw
 
     paper = _parse_s2_paper(data)
     paper["publication_date"] = data.get("publicationDate", "")
@@ -208,23 +224,21 @@ async def _fetch_full_content(
 
 
 async def _try_arxiv_html(arxiv_id: str) -> str | None:
-    import aiohttp
-
     html_url = f"https://arxiv.org/html/{arxiv_id}"
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                html_url,
-                headers={"User-Agent": _USER_AGENT},
-                timeout=aiohttp.ClientTimeout(total=_CFG.html_fetch_timeout),
-            ) as resp:
-                if resp.status != 200:
-                    return None
-                content_type = resp.headers.get("Content-Type", "")
-                if "text/html" not in content_type.lower():
-                    return None
-                body = await resp.text()
-    except (aiohttp.ClientError, TimeoutError):
+        status, body = await http_get_with_retry(
+            html_url,
+            timeout=_CFG.html_fetch_timeout,
+            retry=HttpRetryConfig(max_attempts=3, base_delay=1.0),
+        )
+    except Exception:
+        return None
+
+    if status != 200:
+        return None
+
+    lowered = body.lower()
+    if "<html" not in lowered and "<!doctype html" not in lowered:
         return None
 
     from agent_harness.tool.builtin.web_fetch import _extract_text_from_html
@@ -261,7 +275,8 @@ async def _fetch_via_pdf_parser(
 async def _resolve_pdf_url(
     paper_id: str, source: str, api_key: str | None
 ) -> str:
-    from agent_harness.tool.builtin.paper_search import _api_get_with_retry
+    if source not in ("arxiv", "semantic_scholar"):
+        return f"Error: unknown source {source!r}. Use 'arxiv' or 'semantic_scholar'."
 
     fields = "openAccessPdf,externalIds"
     url = (
@@ -274,7 +289,11 @@ async def _resolve_pdf_url(
         extra_headers["x-api-key"] = api_key
 
     try:
-        status, body = await _api_get_with_retry(url, headers=extra_headers)
+        status, body = await http_get_with_retry(
+            url,
+            headers=extra_headers,
+            retry=HttpRetryConfig(max_attempts=3, base_delay=1.0),
+        )
     except Exception as exc:
         return f"Error: cannot resolve PDF URL: {exc}"
 
@@ -283,7 +302,13 @@ async def _resolve_pdf_url(
     if status != 200:
         return f"Error: cannot resolve PDF URL (HTTP {status})"
 
-    data = _json.loads(body)
+    try:
+        data_raw = parse_json_lenient(body)
+    except ValueError as exc:
+        return f"Error: failed to parse Semantic Scholar response: {exc}"
+    if not isinstance(data_raw, dict):
+        return "Error: unexpected Semantic Scholar response format"
+    data = data_raw
 
     pdf_info: dict[str, str] = data.get("openAccessPdf") or {}
     oa_pdf_url: str = pdf_info.get("url", "")
@@ -306,19 +331,25 @@ async def _resolve_pdf_url(
 
 
 async def _try_unpaywall(doi: str) -> str:
-    import aiohttp
-
     url = f"https://api.unpaywall.org/v2/{doi}?email=agent-harness@example.com"
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                url, timeout=aiohttp.ClientTimeout(total=15)
-            ) as resp:
-                if resp.status != 200:
-                    return f"Error: no open access PDF found for DOI {doi}"
-                data = await resp.json()
-    except (aiohttp.ClientError, TimeoutError):
+        status, body = await http_get_with_retry(
+            url,
+            timeout=15,
+            retry=HttpRetryConfig(max_attempts=3, base_delay=1.0),
+        )
+    except Exception:
         return f"Error: failed to query Unpaywall for DOI {doi}"
+    if status != 200:
+        return f"Error: no open access PDF found for DOI {doi}"
+
+    try:
+        data_raw = parse_json_lenient(body)
+    except ValueError as exc:
+        return f"Error: failed to parse Unpaywall response for DOI {doi}: {exc}"
+    if not isinstance(data_raw, dict):
+        return f"Error: unexpected Unpaywall response format for DOI {doi}"
+    data = data_raw
 
     best: dict[str, str] = data.get("best_oa_location") or {}
     oa_url: str = best.get("url_for_pdf", "")
@@ -339,7 +370,7 @@ async def paper_fetch(
     mode: str = "metadata",
     source: str = "arxiv",
 ) -> str:
-    """Fetch academic paper details by ID.
+    """Fetch academic paper content by its ID.
 
     Two modes: "metadata" returns detailed structured info (title,
     authors, full abstract, citations, fields of study); "full"
@@ -348,7 +379,7 @@ async def paper_fetch(
     Args:
         paper_id: arXiv ID like "2301.07041", or DOI:/ARXIV:/ACM:-prefixed ID for S2.
         mode: "metadata" for structured info, or "full" for complete content.
-        source: "arxiv" (default) or "semantic_scholar" for IEEE/ACM/ScienceDirect.
+        source: "arxiv" (default) or "semantic_scholar" for IEEE/ACM/ScienceDirect etc.
     """
     if not paper_id.strip():
         return "Error: paper_id cannot be empty"
@@ -359,17 +390,17 @@ async def paper_fetch(
             f"Use 'metadata' for structured info or 'full' for complete content."
         )
 
+    if source not in ("arxiv", "semantic_scholar"):
+        return (
+            f"Error: unknown source {source!r}. "
+            f"Use 'arxiv' or 'semantic_scholar'."
+        )
+
     cfg = resolve_paper_config(None)
 
     if mode == "metadata":
         if source == "arxiv":
             return await _fetch_arxiv_metadata(paper_id)
-        elif source == "semantic_scholar":
-            return await _fetch_s2_metadata(paper_id, cfg.semantic_scholar_api_key)
-        else:
-            return (
-                f"Error: unknown source {source!r}. "
-                f"Use 'arxiv' or 'semantic_scholar'."
-            )
+        return await _fetch_s2_metadata(paper_id, cfg.semantic_scholar_api_key)
 
     return await _fetch_full_content(paper_id, source, cfg.semantic_scholar_api_key)

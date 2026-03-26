@@ -11,9 +11,11 @@ from agent_harness.core.config import (
     MemoryConfig,
     PaperConfig,
     SearchConfig,
+    SkillConfig,
     ToolConfig,
     TracingConfig,
 )
+from agent_harness.skills.loader import Skill, SkillLoader
 from agent_harness.core.event import Event, EventBus
 from agent_harness.core.errors import HarnessError
 from agent_harness.llm.base import BaseLLM
@@ -42,6 +44,7 @@ __all__ = [
     "ToolConfig",
     "SearchConfig",
     "PaperConfig",
+    "SkillConfig",
     "Event",
     "EventBus",
     "HarnessError",
@@ -60,4 +63,7 @@ __all__ = [
     "ConversationalAgent",
     # Context
     "AgentContext",
+    # Skills
+    "Skill",
+    "SkillLoader",
 ]

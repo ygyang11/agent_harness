@@ -1,8 +1,6 @@
 """Academic paper search tool supporting arXiv and Semantic Scholar."""
 from __future__ import annotations
 
-import asyncio
-import json as _json
 import logging
 import re
 from dataclasses import dataclass
@@ -12,13 +10,14 @@ from xml.etree.ElementTree import Element, fromstring
 
 from agent_harness.core.config import resolve_paper_config
 from agent_harness.tool.decorator import tool
+from agent_harness.utils.http_retry import HttpRetryConfig, http_get_with_retry
+from agent_harness.utils.json_utils import parse_json_lenient
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
 class PaperSearchConfig:
-    arxiv_request_delay: float = 3.0
     max_retries: int = 3
     retry_base_delay: float = 1.0
 
@@ -41,51 +40,6 @@ _S2_SEARCH_FIELDS = (
     "paperId,title,authors,abstract,year,venue,"
     "externalIds,openAccessPdf,citationCount,publicationTypes"
 )
-
-
-# ---------------------------------------------------------------------------
-# Retry helper
-# ---------------------------------------------------------------------------
-
-
-async def _api_get_with_retry(
-    url: str,
-    headers: dict[str, str] | None = None,
-    timeout: int = 30,
-) -> tuple[int, str]:
-    """GET with exponential backoff on 429 and transient errors."""
-    import aiohttp
-
-    hdrs = {"User-Agent": _USER_AGENT}
-    if headers:
-        hdrs.update(headers)
-
-    last_exc: Exception | None = None
-    for attempt in range(_CFG.max_retries + 1):
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    url, headers=hdrs, timeout=aiohttp.ClientTimeout(total=timeout)
-                ) as resp:
-                    body = await resp.text()
-                    if resp.status != 429:
-                        return resp.status, body
-                    logger.warning(
-                        "Rate limited (429), retry %d/%d", attempt + 1, _CFG.max_retries
-                    )
-        except (aiohttp.ClientError, TimeoutError) as exc:
-            last_exc = exc
-            logger.warning(
-                "Request failed (%s), retry %d/%d", exc, attempt + 1, _CFG.max_retries
-            )
-
-        if attempt < _CFG.max_retries:
-            delay = _CFG.retry_base_delay * (2**attempt)
-            await asyncio.sleep(delay)
-
-    if last_exc:
-        raise last_exc
-    return 429, "Rate limit exceeded after retries"
 
 
 # ---------------------------------------------------------------------------
@@ -119,10 +73,27 @@ def _build_arxiv_query_url(query: str, max_results: int, start: int = 0) -> str:
 
 
 async def _fetch_xml(url: str) -> Element:
-    status, text = await _api_get_with_retry(url)
+    retry = HttpRetryConfig(
+        max_attempts=max(1, _CFG.max_retries),
+        base_delay=_CFG.retry_base_delay,
+    )
+    headers = {"User-Agent": _USER_AGENT}
+    try:
+        status, text = await http_get_with_retry(
+            url,
+            headers=headers,
+            retry=retry,
+        )
+    except Exception as exc:
+        raise RuntimeError(f"arXiv request failed: {exc}") from exc
+    if status == 429:
+        raise RuntimeError("arXiv API returned HTTP 429")
     if status != 200:
         raise RuntimeError(f"arXiv API returned HTTP {status}")
-    return fromstring(text)
+    try:
+        return fromstring(text)
+    except Exception as exc:
+        raise RuntimeError(f"Failed to parse arXiv Atom response: {exc}") from exc
 
 
 def _parse_arxiv_entry(entry: Element) -> dict[str, Any]:
@@ -163,7 +134,13 @@ def _parse_arxiv_entry(entry: Element) -> dict[str, Any]:
 
 async def _search_arxiv(query: str, max_results: int) -> str:
     url = _build_arxiv_query_url(query, max_results)
-    root = await _fetch_xml(url)
+    try:
+        root = await _fetch_xml(url)
+    except Exception as exc:
+        err = str(exc)
+        if err.startswith("arXiv request failed:"):
+            return f"Error: {err}"
+        return f"Error: arXiv request failed: {err}"
 
     entries = root.findall(f"{_ATOM_NS}entry")
     if not entries:
@@ -183,7 +160,7 @@ async def _search_semantic_scholar(
 ) -> str:
     params = urlencode({
         "query": query,
-        "limit": min(max_results, 100),
+        "limit": min(max_results, 30),
         "fields": _S2_SEARCH_FIELDS,
     })
     url = f"{_S2_API}/paper/search?{params}"
@@ -192,8 +169,18 @@ async def _search_semantic_scholar(
     if api_key:
         extra_headers["x-api-key"] = api_key
 
+    headers = {"User-Agent": _USER_AGENT}
+    headers.update(extra_headers)
+    retry = HttpRetryConfig(
+        max_attempts=max(1, _CFG.max_retries),
+        base_delay=_CFG.retry_base_delay,
+    )
     try:
-        status, body = await _api_get_with_retry(url, headers=extra_headers)
+        status, body = await http_get_with_retry(
+            url,
+            headers=headers,
+            retry=retry,
+        )
     except Exception as exc:
         return f"Error: Semantic Scholar request failed: {exc}"
 
@@ -208,7 +195,13 @@ async def _search_semantic_scholar(
             f"Detail: {body[:200]}"
         )
 
-    data = _json.loads(body)
+    try:
+        data_raw = parse_json_lenient(body)
+    except ValueError as exc:
+        return f"Error: failed to parse Semantic Scholar response: {exc}"
+    if not isinstance(data_raw, dict):
+        return "Error: unexpected Semantic Scholar response format"
+    data = data_raw
 
     total = data.get("total", 0)
     papers_raw = data.get("data", [])
@@ -295,14 +288,9 @@ def _format_paper_results(papers: list[dict[str, Any]], source: str) -> str:
         lines.append("\n".join(parts))
 
     footer_lines = ["\n---"]
-    footer_lines.append("Next steps:")
     footer_lines.append(
-        '- Use `paper_fetch(paper_id="<arXiv ID or DOI>", mode="metadata")` '
-        "for detailed info on a specific paper."
-    )
-    footer_lines.append(
-        '- Use `paper_fetch(paper_id="<arXiv ID or DOI>", mode="full")` '
-        "to get the complete paper content."
+        '- Use `paper_fetch(paper_id="<arXiv ID or DOI>", mode="<metadata|full>")` '
+        "for detailed metadata or complete paper content if needed and available."
     )
     if source == "arxiv":
         footer_lines.append(
@@ -337,12 +325,12 @@ async def paper_search(
     Args:
         query: Search query string or arXiv ID (e.g. "2301.07041").
         source: "arxiv" (default) or "semantic_scholar" for IEEE/ACM/ScienceDirect/PubMed etc.
-        max_results: Number of results to return (1-100, default 10).
+        max_results: Number of results to return (1-30, default 10).
     """
     if not query.strip():
         return "Error: query cannot be empty"
 
-    max_results = max(1, min(max_results, 100))
+    max_results = max(1, min(max_results, 30))
 
     if source == "arxiv":
         return await _search_arxiv(query, max_results)
