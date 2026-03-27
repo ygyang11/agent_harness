@@ -22,6 +22,17 @@ Agent-Harness 备好了构建 Agent 要用的东西 ——
 
 ---
 
+## 近期更新
+
+- `2026.03.27` **v0.2.0** — 上线 Skill 系统，Agent 按需加载领域技能，自动适配行为。
+  内置 `humanizer` 和 `comm-lit-review` 两个skill。
+- `2026.03.26` 新增内置工具 `paper_search`、`paper_fetch`，接入 arXiv 和 Semantic Scholar。
+  `pdf_parser` 可靠性增强。
+- `2026.03.22` **v0.1.0** — 首次发布。三种 Agent、四种编排模式、三层记忆、双 Provider、
+  完整 Tracing，以及 5 个内置工具（`web_search`、`web_fetch`、`terminal`、`pdf_parser`、`take_notes`）。
+
+---
+
 ## 亮点
 
 ### 即刻上手

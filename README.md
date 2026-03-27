@@ -20,6 +20,18 @@ to be understood, modified, and extended.
 
 ---
 
+## Recent Updates
+
+- `2026.03.27` **v0.2.0** — Skill system. Agents can load domain-specific instructions on demand
+  and adapt their behavior automatically. Ships with `humanizer` and `comm-lit-review` skills.
+- `2026.03.26` New built-in tools: `paper_search` and `paper_fetch` for arXiv & Semantic Scholar.
+  Enhanced `pdf_parser` reliability.
+- `2026.03.22` **v0.1.0** — Initial release. ReAct / Plan-and-Execute / Conversational agents,
+  4 orchestration modes, 3-layer memory, OpenAI & Anthropic providers, built-in tracing, and
+  5 built-in tools (`web_search`, `web_fetch`, `terminal`, `pdf_parser`, `take_notes`).
+
+---
+
 ## Highlights
 
 ### Get Started in Minutes
