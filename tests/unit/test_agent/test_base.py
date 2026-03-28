@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent_harness.agent.hooks import DefaultHooks, TracingHooks
+from agent_harness.hooks import DefaultHooks, TracingHooks
 from agent_harness.agent.base import StepResult
 from agent_harness.agent.conversational import ConversationalAgent
 from agent_harness.core.config import HarnessConfig, LLMConfig, TracingConfig

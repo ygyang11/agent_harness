@@ -8,7 +8,7 @@ from enum import Enum
 from pydantic import BaseModel, Field
 
 from agent_harness.agent.base import BaseAgent, AgentResult
-from agent_harness.agent.hooks import DefaultHooks, resolve_hooks
+from agent_harness.hooks import DefaultHooks, resolve_hooks
 from agent_harness.core.config import HarnessConfig
 from agent_harness.core.message import Message
 from agent_harness.llm.base import BaseLLM

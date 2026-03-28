@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 
 from agent_harness.agent.conversational import ConversationalAgent
-from agent_harness.agent.hooks import DefaultHooks
+from agent_harness.hooks import DefaultHooks
 from agent_harness.context.context import AgentContext
 from agent_harness.orchestration import AgentRouter, Pipeline, PipelineStep, Route
 

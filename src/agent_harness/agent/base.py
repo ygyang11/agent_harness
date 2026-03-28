@@ -11,13 +11,13 @@ if TYPE_CHECKING:
 
 from pydantic import BaseModel, Field
 
-from agent_harness.agent.hooks import DefaultHooks, resolve_hooks
 from agent_harness.context.context import AgentContext
 from agent_harness.context.state import AgentState
 from agent_harness.core.config import HarnessConfig
 from agent_harness.core.errors import MaxStepsExceededError
 from agent_harness.core.event import EventEmitter
 from agent_harness.core.message import Message, Role, ToolCall, ToolResult
+from agent_harness.hooks import DefaultHooks, resolve_hooks
 from agent_harness.llm import create_llm
 from agent_harness.llm.base import BaseLLM
 from agent_harness.llm.types import LLMResponse, StreamDelta, Usage

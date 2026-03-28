@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_harness.agent.hooks import (
+from agent_harness.hooks import (
     CompositeHooks,
     DefaultHooks,
     ProgressHooks,
@@ -37,7 +37,7 @@ class TestTracingHooksLifecycle:
 
     @pytest.mark.asyncio
     async def test_step_spans_are_children(self) -> None:
-        from agent_harness.agent.hooks import _active_step_span
+        from agent_harness.hooks.tracing import _active_step_span
 
         hooks = TracingHooks(trace_dir="/tmp/test_traces")
         await hooks.on_run_start("agent", "input")
@@ -712,7 +712,7 @@ class TestStreamingHooks:
     @pytest.mark.asyncio
     async def test_concurrent_streaming_independent(self) -> None:
         import asyncio
-        from agent_harness.agent.hooks import _streaming_active
+        from agent_harness.hooks.tracing import _streaming_active
 
         hooks = TracingHooks(trace_dir="/tmp/test_traces")
         await hooks.on_team_start("team", "supervisor")

@@ -9,7 +9,7 @@ from typing import Callable, TYPE_CHECKING
 from pydantic import BaseModel
 
 from agent_harness.agent.base import BaseAgent, AgentResult
-from agent_harness.agent.hooks import DefaultHooks, resolve_hooks
+from agent_harness.hooks import DefaultHooks, resolve_hooks
 from agent_harness.core.config import HarnessConfig
 from agent_harness.core.errors import OrchestrationError
 from agent_harness.core.message import Message

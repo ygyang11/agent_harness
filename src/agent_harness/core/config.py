@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field, PrivateAttr, field_validator
 load_dotenv()
 
 if TYPE_CHECKING:
-    from agent_harness.agent.hooks import DefaultHooks
+    from agent_harness.hooks import DefaultHooks
 
 
 class _EnvVars:
