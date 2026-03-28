@@ -61,7 +61,7 @@ skill:
 # --- Tracing & Observability ---
 tracing:
   enabled: true                 # Enable tracing
-  exporter: "console"           # "console" | "json_file"
+  exporter: "console"           # "console" | "json_file" ｜ "both"
   export_path: "./traces"       # Directory for trace exports
 
 # --- General ---
