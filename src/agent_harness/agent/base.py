@@ -95,7 +95,7 @@ class BaseAgent(ABC, EventEmitter):
         max_steps: int = 20,
         system_prompt: str = "",
         use_long_term_memory: bool = False,
-        stream: bool = False,
+        stream: bool = True,
         *,
         config: HarnessConfig | None = None,
     ) -> None:
@@ -284,7 +284,8 @@ class BaseAgent(ABC, EventEmitter):
                 break
             try:
                 result = await self.run(user_input, session=session)
-                print(result.output)
+                if not self._stream:
+                    print(result.output)
             except Exception as e:
                 print(f"Error: {e}")
 

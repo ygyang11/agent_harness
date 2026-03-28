@@ -5,16 +5,16 @@ import contextvars
 import sys
 import uuid
 from datetime import datetime
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from agent_harness.core.config import HarnessConfig
-from agent_harness.tracing.tracer import Span, SpanEvent
 from agent_harness.tracing.exporters.console import ConsoleExporter
 from agent_harness.tracing.exporters.json_file import JsonFileExporter
+from agent_harness.tracing.tracer import Span
 from agent_harness.utils.token_counter import truncate_text_by_tokens
 
 if TYPE_CHECKING:
-    from agent_harness.core.message import Message, ToolCall, ToolResult
+    from agent_harness.core.message import ToolCall
     from agent_harness.llm.types import StreamDelta
 
 _active_orchestration_parent: contextvars.ContextVar[Span | None] = contextvars.ContextVar(
@@ -101,6 +101,30 @@ class DefaultHooks:
     async def on_error(self, agent_name: str, error: Exception) -> None:
         pass
 
+    async def on_pipeline_start(self, pipeline_name: str) -> None:
+        pass
+
+    async def on_pipeline_end(self, pipeline_name: str) -> None:
+        pass
+
+    async def on_dag_start(self, dag_name: str) -> None:
+        pass
+
+    async def on_dag_end(self, dag_name: str) -> None:
+        pass
+
+    async def on_dag_node_start(self, node_id: str) -> None:
+        pass
+
+    async def on_dag_node_end(self, node_id: str) -> None:
+        pass
+
+    async def on_team_start(self, team_name: str, mode: str) -> None:
+        pass
+
+    async def on_team_end(self, team_name: str, mode: str) -> None:
+        pass
+
 
 class TracingHooks(DefaultHooks):
     """Hooks that automatically create and manage trace spans.
@@ -118,10 +142,16 @@ class TracingHooks(DefaultHooks):
         self,
         *,
         trace_dir: str = "./traces",
+        exporter: str = "both",
         console_color: bool = True,
     ) -> None:
         self._trace_dir = trace_dir
-        self._console = ConsoleExporter(stream=sys.stderr, color=console_color)
+        self._console_enabled = exporter in ("console", "both")
+        self._json_enabled = exporter in ("json_file", "both")
+        self._console = (
+            ConsoleExporter(stream=sys.stderr, color=console_color)
+            if self._console_enabled else None
+        )
 
         # Span tracking
         self._trace_id: str = ""
@@ -139,6 +169,18 @@ class TracingHooks(DefaultHooks):
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _cwrite(self, text: str) -> None:
+        if self._console is not None:
+            self._console.write_inline(text)
+
+    def _cprint_start(self, **kwargs: Any) -> None:
+        if self._console is not None:
+            self._console.print_start(**kwargs)
+
+    def _cexport_one(self, span: Span, *, indent: int) -> None:
+        if self._console is not None:
+            self._console.export_one(span, indent=indent)
 
     def _new_span(
         self,
@@ -176,11 +218,11 @@ class TracingHooks(DefaultHooks):
         self._all_spans.append(span)
         if span in self._span_stack:
             self._span_stack.remove(span)
-        self._console.export_one(span, indent=indent)
+        self._cexport_one(span, indent=indent)
 
     def _export_all(self) -> None:
         """Flush all collected spans to JSON file."""
-        if not self._all_spans:
+        if not self._json_enabled or not self._all_spans:
             return
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         exporter = JsonFileExporter(path=f"{self._trace_dir}/{ts}.jsonl")
@@ -233,7 +275,7 @@ class TracingHooks(DefaultHooks):
         self._run_span_stack.append(run_span)
         _active_run_span.set(run_span)
         self._root_span = run_span
-        self._console.print_start(
+        self._cprint_start(
             kind=run_span.kind,
             name=run_span.name,
             indent=self._span_depth_map.get(run_span.span_id, 0),
@@ -247,11 +289,11 @@ class TracingHooks(DefaultHooks):
         )
         _active_step_span.set(step_span)
         indent = self._span_depth_map.get(step_span.span_id, 0)
-        self._console.write_inline(f"{'  ' * indent}⟳ step.{step}\n")
+        self._cwrite(f"{'  ' * indent}⟳ step.{step}\n")
 
     async def on_step_end(self, agent_name: str, step: int) -> None:
         if _streaming_active.get(False):
-            self._console.write_inline("\n")
+            self._cwrite("\n")
             _streaming_active.set(False)
         step_span = _active_step_span.get(None)
         if step_span:
@@ -264,7 +306,7 @@ class TracingHooks(DefaultHooks):
                 f"{step_span.duration_ms:.1f}ms"
                 if step_span.duration_ms is not None else "..."
             )
-            self._console.write_inline(f"{'  ' * indent}✓ {step_span.name} ({duration})\n")
+            self._cwrite(f"{'  ' * indent}✓ {step_span.name} ({duration})\n")
             _active_step_span.set(None)
 
     async def on_llm_call(self, agent_name: str, messages: list[Any]) -> None:
@@ -272,7 +314,7 @@ class TracingHooks(DefaultHooks):
         if active:
             active.add_event("llm_call", agent=agent_name, message_count=len(messages))
             indent = self._span_depth_map.get(active.span_id, 0) + 1
-            self._console.write_inline(
+            self._cwrite(
                 f"{'  ' * indent}• llm_call "
                 f"{{agent={agent_name}, message_count={len(messages)}}}\n"
             )
@@ -286,19 +328,19 @@ class TracingHooks(DefaultHooks):
                     self._span_depth_map.get(step_span.span_id, 0) + 1
                     if step_span else 0
                 )
-                self._console.write_inline("  " * depth + "▸ ")
-            self._console.write_inline(delta.chunk.delta_content)
+                self._cwrite("  " * depth + "▸ ")
+            self._cwrite(delta.chunk.delta_content)
 
     async def on_tool_call(self, agent_name: str, tool_call: ToolCall) -> None:
         if _streaming_active.get(False):
-            self._console.write_inline("\n")
+            self._cwrite("\n")
             _streaming_active.set(False)
         active = _active_step_span.get(None) or _active_run_span.get(None)
         if active:
             details = _summarize_tool_call(tool_call)
             active.add_event("tool_call", agent=agent_name, **details)
             indent = self._span_depth_map.get(active.span_id, 0) + 1
-            self._console.write_inline(
+            self._cwrite(
                 f"{'  ' * indent}• tool_call "
                 f"{{agent={agent_name}, tool={details['tool']}, args={details['args']}}}\n"
             )
@@ -312,13 +354,13 @@ class TracingHooks(DefaultHooks):
             )
             active.add_event("tool_result", agent=agent_name, output=truncated)
             indent = self._span_depth_map.get(active.span_id, 0) + 1
-            self._console.write_inline(
+            self._cwrite(
                 f"{'  ' * indent}• tool_result {{agent={agent_name}, output={truncated}}}\n"
             )
 
     async def on_error(self, agent_name: str, error: Exception) -> None:
         if _streaming_active.get(False):
-            self._console.write_inline("\n")
+            self._cwrite("\n")
             _streaming_active.set(False)
         step_span = _active_step_span.get(None)
         if step_span:
@@ -331,7 +373,7 @@ class TracingHooks(DefaultHooks):
                 f"{step_span.duration_ms:.1f}ms"
                 if step_span.duration_ms is not None else "..."
             )
-            self._console.write_inline(f"{'  ' * indent}✗ {step_span.name} ({duration})\n")
+            self._cwrite(f"{'  ' * indent}✗ {step_span.name} ({duration})\n")
             _active_step_span.set(None)
         run_span = _active_run_span.get(None)
         _active_run_span.set(None)
@@ -368,7 +410,7 @@ class TracingHooks(DefaultHooks):
         span.attributes["orchestration"] = "pipeline"
         self._pipeline_span_stack.append(span)
         _active_orchestration_parent.set(span)
-        self._console.print_start(
+        self._cprint_start(
             kind=span.kind,
             name=span.name,
             indent=self._span_depth_map.get(span.span_id, 0),
@@ -387,7 +429,7 @@ class TracingHooks(DefaultHooks):
         span = self._new_span(f"dag.{dag_name}", kind="orchestration")
         span.attributes["orchestration"] = "dag"
         self._dag_span_stack.append(span)
-        self._console.print_start(
+        self._cprint_start(
             kind=span.kind,
             name=span.name,
             indent=self._span_depth_map.get(span.span_id, 0),
@@ -410,7 +452,7 @@ class TracingHooks(DefaultHooks):
         )
         self._dag_node_span_stack.append(span)
         _active_orchestration_parent.set(span)
-        self._console.print_start(
+        self._cprint_start(
             kind=span.kind,
             name=span.name,
             indent=self._span_depth_map.get(span.span_id, 0),
@@ -430,7 +472,7 @@ class TracingHooks(DefaultHooks):
         span.attributes["mode"] = mode
         self._team_span_stack.append(span)
         _active_orchestration_parent.set(span)
-        self._console.print_start(
+        self._cprint_start(
             kind=span.kind,
             name=span.name,
             indent=self._span_depth_map.get(span.span_id, 0),
@@ -448,19 +490,191 @@ class TracingHooks(DefaultHooks):
         self._end_execution()
 
 
+_PROGRESS_COLORS = {
+    "bold": "\033[1m",
+    "dim": "\033[2m",
+    "red": "\033[31m",
+    "green": "\033[32m",
+    "yellow": "\033[33m",
+    "reset": "\033[0m",
+}
+
+
+class ProgressHooks(DefaultHooks):
+    """User-facing progress output: tool calls, streaming content, errors."""
+
+    _MAX_VISIBLE_TOOLS = 3
+
+    def __init__(self, output: Any = None, color: bool = True) -> None:
+        self._output = output or sys.stdout
+        self._color = color and hasattr(self._output, "isatty") and self._output.isatty()
+        self._streaming = False
+        self._tool_call_count = 0
+        self._tool_error_count = 0
+
+    def _c(self, name: str) -> str:
+        return _PROGRESS_COLORS.get(name, "") if self._color else ""
+
+    async def on_tool_call(self, agent_name: str, tool_call: ToolCall) -> None:
+        if self._streaming:
+            self._output.write("\n")
+            self._output.flush()
+            self._streaming = False
+        self._tool_call_count += 1
+        if self._tool_call_count <= self._MAX_VISIBLE_TOOLS:
+            bold, reset = self._c("bold"), self._c("reset")
+            args_preview = ", ".join(
+                f'{k}="{v}"' for k, v in tool_call.arguments.items()
+            )
+            yellow, reset2 = self._c("yellow"), self._c("reset")
+            prefix = f"{yellow}⏺{reset2} " if self._tool_call_count == 1 else "  "
+            self._write(f"{prefix}⚡ {bold}{tool_call.name}{reset}({args_preview})\n")
+
+    async def on_tool_result(self, agent_name: str, result: Any) -> None:
+        if getattr(result, "is_error", False):
+            self._tool_error_count += 1
+
+    async def on_llm_stream_delta(self, agent_name: str, delta: StreamDelta) -> None:
+        if delta.chunk.delta_content:
+            if not self._streaming:
+                self._streaming = True
+                self._write("⏺ ")
+            self._output.write(delta.chunk.delta_content)
+            self._output.flush()
+
+    async def on_step_end(self, agent_name: str, step: int) -> None:
+        if self._streaming:
+            self._output.write("\n")
+            self._output.flush()
+            self._streaming = False
+        if self._tool_call_count > 0:
+            self._print_tool_summary()
+
+    async def on_error(self, agent_name: str, error: Exception) -> None:
+        if self._streaming:
+            self._output.write("\n")
+            self._output.flush()
+            self._streaming = False
+        if self._tool_call_count > 0:
+            self._print_tool_summary()
+        red, reset = self._c("red"), self._c("reset")
+        self._write(f"  {red}❌ Error: {error}{reset}\n")
+
+    def _print_tool_summary(self) -> None:
+        green, red, reset = self._c("green"), self._c("red"), self._c("reset")
+        total = self._tool_call_count
+        if total > self._MAX_VISIBLE_TOOLS:
+            overflow = total - self._MAX_VISIBLE_TOOLS
+            self._write(f"  ... and {overflow} more tools\n")
+        errors = self._tool_error_count
+        if errors:
+            self._write(
+                f"  ⎿ {green}✓ {total - errors}/{total} completed{reset}, "
+                f"{red}✗ {errors} failed{reset}\n"
+            )
+        else:
+            self._write(f"  ⎿ {green}✓ {total}/{total} completed{reset}\n")
+        self._tool_call_count = 0
+        self._tool_error_count = 0
+
+    def _write(self, text: str) -> None:
+        self._output.write(text)
+        self._output.flush()
+
+
+class CompositeHooks(DefaultHooks):
+    """Runs multiple hooks implementations in sequence."""
+
+    def __init__(self, *hooks: DefaultHooks) -> None:
+        self._hooks = [h for h in hooks if h is not None]
+
+    async def on_run_start(self, agent_name: str, input_text: str) -> None:
+        for h in self._hooks:
+            await h.on_run_start(agent_name, input_text)
+
+    async def on_step_start(self, agent_name: str, step: int) -> None:
+        for h in self._hooks:
+            await h.on_step_start(agent_name, step)
+
+    async def on_llm_call(self, agent_name: str, messages: list[Any]) -> None:
+        for h in self._hooks:
+            await h.on_llm_call(agent_name, messages)
+
+    async def on_llm_stream_delta(self, agent_name: str, delta: StreamDelta) -> None:
+        for h in self._hooks:
+            await h.on_llm_stream_delta(agent_name, delta)
+
+    async def on_tool_call(self, agent_name: str, tool_call: ToolCall) -> None:
+        for h in self._hooks:
+            await h.on_tool_call(agent_name, tool_call)
+
+    async def on_tool_result(self, agent_name: str, result: Any) -> None:
+        for h in self._hooks:
+            await h.on_tool_result(agent_name, result)
+
+    async def on_step_end(self, agent_name: str, step: int) -> None:
+        for h in self._hooks:
+            await h.on_step_end(agent_name, step)
+
+    async def on_run_end(self, agent_name: str, output: str) -> None:
+        for h in self._hooks:
+            await h.on_run_end(agent_name, output)
+
+    async def on_error(self, agent_name: str, error: Exception) -> None:
+        for h in self._hooks:
+            await h.on_error(agent_name, error)
+
+    async def on_pipeline_start(self, pipeline_name: str) -> None:
+        for h in self._hooks:
+            await h.on_pipeline_start(pipeline_name)
+
+    async def on_pipeline_end(self, pipeline_name: str) -> None:
+        for h in self._hooks:
+            await h.on_pipeline_end(pipeline_name)
+
+    async def on_dag_start(self, dag_name: str) -> None:
+        for h in self._hooks:
+            await h.on_dag_start(dag_name)
+
+    async def on_dag_end(self, dag_name: str) -> None:
+        for h in self._hooks:
+            await h.on_dag_end(dag_name)
+
+    async def on_dag_node_start(self, node_id: str) -> None:
+        for h in self._hooks:
+            await h.on_dag_node_start(node_id)
+
+    async def on_dag_node_end(self, node_id: str) -> None:
+        for h in self._hooks:
+            await h.on_dag_node_end(node_id)
+
+    async def on_team_start(self, team_name: str, mode: str) -> None:
+        for h in self._hooks:
+            await h.on_team_start(team_name, mode)
+
+    async def on_team_end(self, team_name: str, mode: str) -> None:
+        for h in self._hooks:
+            await h.on_team_end(team_name, mode)
+
+
 def resolve_hooks(
     hooks: DefaultHooks | None,
     config: HarnessConfig | None,
 ) -> DefaultHooks:
     cfg = config or HarnessConfig.get()
-    tracing_cfg = cfg.tracing
-    if not tracing_cfg.enabled:
-        return DefaultHooks()
+
     if hooks is not None:
         return hooks
-    cached = cfg.get_runtime_hooks()
-    if cached is not None:
-        return cached
-    created = TracingHooks(trace_dir=tracing_cfg.export_path)
-    cfg.set_runtime_hooks(created)
-    return created
+
+    if cfg.tracing.enabled:
+        cached = cfg.get_runtime_hooks()
+        if cached is not None:
+            return cached
+        created = TracingHooks(
+            trace_dir=cfg.tracing.export_path,
+            exporter=cfg.tracing.exporter,
+        )
+        cfg.set_runtime_hooks(created)
+        return created
+
+    return ProgressHooks()

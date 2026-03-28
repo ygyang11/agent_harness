@@ -4,8 +4,8 @@ Demonstrates: @tool decorator, ReActAgent, generate vs stream mode,
 multi-step tool use, and inspecting execution steps.
 
 Usage:
-    python examples/react_agent.py              # default (generate mode)
-    python examples/react_agent.py --stream     # streaming mode
+    python examples/agents/react_agent.py               # default (stream mode)
+    python examples/agents/react_agent.py --no-stream   # generate mode
 """
 
 import asyncio
@@ -102,5 +102,5 @@ async def run_agent(use_stream: bool) -> None:
 
 
 if __name__ == "__main__":
-    use_stream = "--stream" in sys.argv
+    use_stream = "--no-stream" not in sys.argv
     asyncio.run(run_agent(use_stream))

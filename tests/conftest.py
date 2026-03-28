@@ -90,6 +90,7 @@ class MockLLM(BaseLLM):
         yield StreamDelta(
             chunk=MessageChunk(
                 delta_content=response.message.content,
+                delta_tool_calls=response.message.tool_calls,
                 finish_reason=response.finish_reason.value,
             ),
             usage=response.usage,

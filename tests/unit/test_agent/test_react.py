@@ -196,6 +196,16 @@ class TestSkillPromptSupplement:
         assert await agent._should_inject_system_prompt() is False
 
 
+class TestStreamDefault:
+    def test_stream_defaults_to_true(self) -> None:
+        agent = ReActAgent(name="test", llm=MockLLM())
+        assert agent._stream is True
+
+    def test_stream_explicit_false(self) -> None:
+        agent = ReActAgent(name="test", llm=MockLLM(), stream=False)
+        assert agent._stream is False
+
+
 class TestSessionIntegration:
     async def test_run_restores_from_session(self) -> None:
         llm = MockLLM()

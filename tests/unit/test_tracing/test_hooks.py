@@ -2,12 +2,19 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from pathlib import Path
 
 import pytest
 
-from agent_harness.agent.hooks import DefaultHooks, TracingHooks, resolve_hooks
+from agent_harness.agent.hooks import (
+    CompositeHooks,
+    DefaultHooks,
+    ProgressHooks,
+    TracingHooks,
+    resolve_hooks,
+)
 from agent_harness.core.config import HarnessConfig, TracingConfig
-from agent_harness.core.message import MessageChunk, ToolCall
+from agent_harness.core.message import MessageChunk, ToolCall, ToolResult
 from agent_harness.llm.types import FinishReason, StreamDelta, Usage
 from agent_harness.tracing.tracer import Span
 from agent_harness.utils.token_counter import count_tokens
@@ -303,14 +310,13 @@ class TestTracingHooksOrchestration:
 
 
 class TestResolveHooks:
-    def test_disabled_tracing_returns_default_even_with_explicit_hooks(self) -> None:
+    def test_explicit_hooks_always_respected(self) -> None:
         explicit = TracingHooks(trace_dir="/tmp/explicit")
         cfg = HarnessConfig(tracing=TracingConfig(enabled=False))
 
         resolved = resolve_hooks(explicit, cfg)
 
-        assert isinstance(resolved, DefaultHooks)
-        assert not isinstance(resolved, TracingHooks)
+        assert resolved is explicit
 
     def test_enabled_tracing_uses_explicit_hooks(self) -> None:
         explicit = DefaultHooks()
@@ -728,3 +734,170 @@ class TestStreamingHooks:
 
         assert results["a"] is True
         assert results["b"] is True
+
+
+class TestProgressHooks:
+    async def test_tool_call_output(self, capsys: pytest.CaptureFixture[str]) -> None:
+        hooks = ProgressHooks(color=False)
+        tc = ToolCall(name="web_search", arguments={"query": "5G news"})
+        await hooks.on_tool_call("test", tc)
+        captured = capsys.readouterr()
+        assert "web_search" in captured.out
+        assert "5G news" in captured.out
+        assert "⚡" in captured.out
+        assert "⏺" in captured.out
+
+    async def test_tool_summary_on_step_end(self, capsys: pytest.CaptureFixture[str]) -> None:
+        hooks = ProgressHooks(color=False)
+        tc = ToolCall(name="web_search", arguments={"query": "5G"})
+        result = ToolResult(tool_call_id="tc1", content="ok", is_error=False)
+        await hooks.on_tool_call("test", tc)
+        await hooks.on_tool_result("test", result)
+        await hooks.on_step_end("test", 1)
+        captured = capsys.readouterr()
+        assert "⎿" in captured.out
+        assert "1/1 completed" in captured.out
+
+    async def test_tool_overflow(self, capsys: pytest.CaptureFixture[str]) -> None:
+        hooks = ProgressHooks(color=False)
+        for i in range(5):
+            tc = ToolCall(name=f"tool_{i}", arguments={"x": str(i)})
+            await hooks.on_tool_call("test", tc)
+            result = ToolResult(tool_call_id=f"tc{i}", content="ok", is_error=False)
+            await hooks.on_tool_result("test", result)
+        await hooks.on_step_end("test", 1)
+        captured = capsys.readouterr()
+        assert "tool_0" in captured.out
+        assert "tool_2" in captured.out
+        assert "tool_3" not in captured.out
+        assert "... and 2 more tools" in captured.out
+        assert "5/5 completed" in captured.out
+
+    async def test_tool_with_errors(self, capsys: pytest.CaptureFixture[str]) -> None:
+        hooks = ProgressHooks(color=False)
+        await hooks.on_tool_call("test", ToolCall(name="good", arguments={}))
+        await hooks.on_tool_result("test", ToolResult(tool_call_id="1", content="ok", is_error=False))
+        await hooks.on_tool_call("test", ToolCall(name="bad", arguments={}))
+        await hooks.on_tool_result("test", ToolResult(tool_call_id="2", content="err", is_error=True))
+        await hooks.on_step_end("test", 1)
+        captured = capsys.readouterr()
+        assert "1/2 completed" in captured.out
+        assert "1 failed" in captured.out
+
+    async def test_on_error(self, capsys: pytest.CaptureFixture[str]) -> None:
+        hooks = ProgressHooks(color=False)
+        await hooks.on_error("test", RuntimeError("max steps exceeded"))
+        captured = capsys.readouterr()
+        assert "❌" in captured.out
+        assert "max steps exceeded" in captured.out
+
+    async def test_stream_and_step_end(self, capsys: pytest.CaptureFixture[str]) -> None:
+        hooks = ProgressHooks(color=False)
+        delta1 = StreamDelta(chunk=MessageChunk(delta_content="Hello "))
+        delta2 = StreamDelta(chunk=MessageChunk(delta_content="world"))
+        await hooks.on_llm_stream_delta("test", delta1)
+        await hooks.on_llm_stream_delta("test", delta2)
+        await hooks.on_step_end("test", 1)
+        captured = capsys.readouterr()
+        assert "Hello world" in captured.out
+        assert "⏺" in captured.out
+        assert captured.out.endswith("\n")
+
+    async def test_tool_result_silent(self, capsys: pytest.CaptureFixture[str]) -> None:
+        hooks = ProgressHooks(color=False)
+        result = ToolResult(tool_call_id="tc1", content="data", is_error=False)
+        await hooks.on_tool_result("test", result)
+        captured = capsys.readouterr()
+        assert captured.out == ""
+
+
+class TestCompositeHooks:
+    async def test_calls_all_hooks(self) -> None:
+        calls: list[str] = []
+
+        class TrackingHooks(DefaultHooks):
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+            async def on_run_start(self, agent_name: str, input_text: str) -> None:
+                calls.append(self.name)
+
+        composite = CompositeHooks(TrackingHooks("a"), TrackingHooks("b"))
+        await composite.on_run_start("test", "hello")
+        assert calls == ["a", "b"]
+
+
+class TestResolveHooksProgress:
+    def test_returns_progress_when_tracing_off(self) -> None:
+        config = HarnessConfig(tracing=TracingConfig(enabled=False))
+        hooks = resolve_hooks(None, config)
+        assert isinstance(hooks, ProgressHooks)
+
+    def test_returns_tracing_when_tracing_on(self) -> None:
+        config = HarnessConfig(tracing=TracingConfig(enabled=True))
+        hooks = resolve_hooks(None, config)
+        assert isinstance(hooks, TracingHooks)
+
+
+class TestTracingExporterConfig:
+    def test_exporter_console_only(self) -> None:
+        hooks = TracingHooks(exporter="console")
+        assert hooks._console is not None
+        assert hooks._console_enabled is True
+        assert hooks._json_enabled is False
+
+    def test_exporter_json_only(self) -> None:
+        hooks = TracingHooks(exporter="json_file")
+        assert hooks._console is None
+        assert hooks._console_enabled is False
+        assert hooks._json_enabled is True
+
+    def test_exporter_both(self) -> None:
+        hooks = TracingHooks(exporter="both")
+        assert hooks._console is not None
+        assert hooks._console_enabled is True
+        assert hooks._json_enabled is True
+
+    def test_default_exporter_is_both(self) -> None:
+        hooks = TracingHooks()
+        assert hooks._console_enabled is True
+        assert hooks._json_enabled is True
+
+    async def test_console_only_no_json_export(self, tmp_path: Path) -> None:
+        hooks = TracingHooks(trace_dir=str(tmp_path), exporter="console")
+        await hooks.on_run_start("agent", "hello")
+        await hooks.on_run_end("agent", "done")
+        json_files = list(tmp_path.glob("*.jsonl"))
+        assert len(json_files) == 0
+
+    async def test_json_only_no_console_output(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        hooks = TracingHooks(trace_dir=str(tmp_path), exporter="json_file")
+        await hooks.on_run_start("agent", "hello")
+        await hooks.on_step_start("agent", 1)
+        await hooks.on_llm_call("agent", [])
+        await hooks.on_step_end("agent", 1)
+        await hooks.on_run_end("agent", "done")
+        captured = capsys.readouterr()
+        assert captured.err == ""
+        json_files = list(tmp_path.glob("*.jsonl"))
+        assert len(json_files) == 1
+
+    async def test_both_produces_console_and_json(self, tmp_path: Path) -> None:
+        hooks = TracingHooks(trace_dir=str(tmp_path), exporter="both")
+        await hooks.on_run_start("agent", "hello")
+        await hooks.on_step_start("agent", 1)
+        await hooks.on_step_end("agent", 1)
+        await hooks.on_run_end("agent", "done")
+        json_files = list(tmp_path.glob("*.jsonl"))
+        assert len(json_files) == 1
+
+    def test_resolve_hooks_passes_exporter_config(self) -> None:
+        config = HarnessConfig(
+            tracing=TracingConfig(enabled=True, exporter="json_file"),
+        )
+        hooks = resolve_hooks(None, config)
+        assert isinstance(hooks, TracingHooks)
+        assert hooks._json_enabled is True
+        assert hooks._console_enabled is False

@@ -74,7 +74,7 @@ class TestTracingConfig:
     def test_defaults(self) -> None:
         cfg = TracingConfig()
         assert cfg.enabled is True
-        assert cfg.exporter == "console"
+        assert cfg.exporter == "both"
         assert cfg.export_path == "./traces"
 
 

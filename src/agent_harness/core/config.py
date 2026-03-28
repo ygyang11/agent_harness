@@ -156,7 +156,7 @@ class TracingConfig(BaseModel):
     """Configuration for observability."""
 
     enabled: bool = True
-    exporter: str = "console"  # console | json_file
+    exporter: str = "both"  # console | json_file | both
     export_path: str = "./traces"
 
 
