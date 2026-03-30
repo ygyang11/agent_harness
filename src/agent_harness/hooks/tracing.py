@@ -11,9 +11,11 @@ from agent_harness.hooks.base import DefaultHooks
 from agent_harness.tracing.exporters.console import ConsoleExporter
 from agent_harness.tracing.exporters.json_file import JsonFileExporter
 from agent_harness.tracing.tracer import Span
+from agent_harness.utils.theme import ICONS
 from agent_harness.utils.token_counter import truncate_text_by_tokens
 
 if TYPE_CHECKING:
+    from agent_harness.approval.types import ApprovalRequest, ApprovalResult
     from agent_harness.core.message import ToolCall
     from agent_harness.llm.types import StreamDelta
 
@@ -278,6 +280,32 @@ class TracingHooks(DefaultHooks):
             self._cwrite(
                 f"{'  ' * indent}• tool_result {{agent={agent_name}, output={truncated}}}\n"
             )
+
+    async def on_approval_request(
+        self, agent_name: str, request: ApprovalRequest
+    ) -> None:
+        active = _active_step_span.get(None) or _active_run_span.get(None)
+        indent = self._span_depth_map.get(active.span_id, 0) + 1 if active else 1
+        icon = ICONS.get("pending", "")
+        self._cwrite(
+            f"{'  ' * indent}{icon} approval_request tool={request.tool_call.name}\n"
+        )
+
+    async def on_approval_result(
+        self, agent_name: str, result: ApprovalResult
+    ) -> None:
+        active = _active_step_span.get(None) or _active_run_span.get(None)
+        indent = self._span_depth_map.get(active.span_id, 0) + 1 if active else 1
+        icon_map = {
+            "allow_once": ICONS.get("check", ""),
+            "allow_session": ICONS.get("double_check", ""),
+            "deny": ICONS.get("cross", ""),
+        }
+        icon = icon_map.get(result.decision, "?")
+        self._cwrite(
+            f"{'  ' * indent}{icon} approval={result.decision}"
+            f" tool={result.tool_name or result.tool_call_id}\n"
+        )
 
     async def on_error(self, agent_name: str, error: Exception) -> None:
         if _streaming_active.get(False):

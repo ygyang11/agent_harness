@@ -174,6 +174,14 @@ class SkillConfig(BaseModel):
         return v
 
 
+class ApprovalConfig(BaseModel):
+    """Configuration for the approval system."""
+
+    mode: str = "never"  # "never" | "auto" | "always"
+    always_allow: list[str] = Field(default_factory=list)
+    always_deny: list[str] = Field(default_factory=list)
+
+
 class HarnessConfig(BaseModel):
     """Root configuration for the agent_harness framework."""
 
@@ -185,6 +193,7 @@ class HarnessConfig(BaseModel):
     paper: PaperConfig = Field(default_factory=PaperConfig)
     tracing: TracingConfig = Field(default_factory=TracingConfig)
     skill: SkillConfig = Field(default_factory=SkillConfig)
+    approval: ApprovalConfig = Field(default_factory=ApprovalConfig)
     verbose: bool = False
 
     _instance: ClassVar[HarnessConfig | None] = None

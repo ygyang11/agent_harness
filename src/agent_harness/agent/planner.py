@@ -314,6 +314,8 @@ class PlanAndExecuteAgent(BaseAgent):
     ) -> None:
         super().__init__(system_prompt=system_prompt or "", **kwargs)
         self._executor_max_steps = executor_max_steps
+        self._executor_approval = self._approval
+        self._executor_approval_handler = self._approval_handler
 
     async def step(self) -> StepResult:
         """Not used — run() is overridden."""
@@ -365,6 +367,8 @@ class PlanAndExecuteAgent(BaseAgent):
                 context=self.context.fork("executor"),
                 hooks=self.hooks,
                 max_steps=self._executor_max_steps,
+                approval=self._executor_approval,
+                approval_handler=self._executor_approval_handler,
             )
             replanner = ReplannerAgent(
                 name=f"{self.name}.replanner",

@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 from agent_harness.hooks.base import DefaultHooks
 
 if TYPE_CHECKING:
+    from agent_harness.approval.types import ApprovalRequest, ApprovalResult
     from agent_harness.core.message import ToolCall
     from agent_harness.llm.types import StreamDelta
 
@@ -75,6 +76,18 @@ class CompositeHooks(DefaultHooks):
     async def on_dag_node_end(self, node_id: str) -> None:
         for h in self._hooks:
             await h.on_dag_node_end(node_id)
+
+    async def on_approval_request(
+        self, agent_name: str, request: ApprovalRequest
+    ) -> None:
+        for h in self._hooks:
+            await h.on_approval_request(agent_name, request)
+
+    async def on_approval_result(
+        self, agent_name: str, result: ApprovalResult
+    ) -> None:
+        for h in self._hooks:
+            await h.on_approval_result(agent_name, result)
 
     async def on_team_start(self, team_name: str, mode: str) -> None:
         for h in self._hooks:

@@ -4,8 +4,18 @@ from agent_harness.utils.logging_config import setup_logging
 # Auto-configure logging on import
 setup_logging()
 
+from agent_harness.approval import (
+    ApprovalAction,
+    ApprovalDecision,
+    ApprovalHandler,
+    ApprovalPolicy,
+    ApprovalRequest,
+    ApprovalResult,
+    StdinApprovalHandler,
+)
 from agent_harness.core.message import Message, Role, ToolCall, ToolResult
 from agent_harness.core.config import (
+    ApprovalConfig,
     HarnessConfig,
     LLMConfig,
     MemoryConfig,
@@ -28,11 +38,20 @@ from agent_harness.agent.conversational import ConversationalAgent
 from agent_harness.context.context import AgentContext
 from agent_harness.session import BaseSession, SessionState, FileSession, InMemorySession
 
-__version__ = "0.3.1"
+__version__ = "0.3.5"
 
 __all__ = [
     # Logging
     "setup_logging",
+    # Approval
+    "ApprovalAction",
+    "ApprovalConfig",
+    "ApprovalDecision",
+    "ApprovalHandler",
+    "ApprovalPolicy",
+    "ApprovalRequest",
+    "ApprovalResult",
+    "StdinApprovalHandler",
     # Core
     "Message",
     "Role",

@@ -11,6 +11,16 @@ if TYPE_CHECKING:
 
 from pydantic import BaseModel, Field
 
+from agent_harness.approval import (
+    ApprovalAction,
+    ApprovalDecision,
+    ApprovalHandler,
+    ApprovalPolicy,
+    ApprovalRequest,
+    ApprovalResult,
+    resolve_approval,
+    resolve_approval_handler,
+)
 from agent_harness.context.context import AgentContext
 from agent_harness.context.state import AgentState
 from agent_harness.core.config import HarnessConfig
@@ -98,6 +108,8 @@ class BaseAgent(ABC, EventEmitter):
         stream: bool = True,
         *,
         config: HarnessConfig | None = None,
+        approval: ApprovalPolicy | None = None,
+        approval_handler: ApprovalHandler | None = None,
     ) -> None:
         self.name = name
         if context is not None:
@@ -114,6 +126,14 @@ class BaseAgent(ABC, EventEmitter):
         self._stream = stream
         self._total_usage = Usage()
         self._session_created_at: datetime | None = None
+
+        # Approval setup
+        self._approval = resolve_approval(approval, self.context.config)
+        self._approval_handler: ApprovalHandler | None = (
+            resolve_approval_handler(approval_handler)
+            if self._approval is not None
+            else None
+        )
 
         # Set up tool registry and executor
         self.tool_registry = ToolRegistry()
@@ -273,6 +293,9 @@ class BaseAgent(ABC, EventEmitter):
         """Interactive REPL loop. Session is transparently handled by run()."""
         import readline  # noqa: F401 — enables arrow keys, history, proper backspace
 
+        if self._approval is not None:
+            self._approval.reset_session()
+
         while True:
             try:
                 user_input = input(prompt).strip()
@@ -354,28 +377,94 @@ class BaseAgent(ABC, EventEmitter):
         return response
 
     async def execute_tools(self, tool_calls: list[ToolCall]) -> list[ToolResult]:
-        """Execute tool calls and store results in memory."""
+        """Execute tool calls with optional human approval."""
         self.context.state.transition(AgentState.ACTING)
 
-        for tc in tool_calls:
-            await self.hooks.on_tool_call(self.name, tc)
+        approved: list[ToolCall] = []
+        denied_results: list[ToolResult] = []
 
-        results = await self.tool_executor.execute_batch(tool_calls)
+        for tc in tool_calls:
+            if self._approval is None:
+                await self.hooks.on_tool_call(self.name, tc)
+                approved.append(tc)
+                continue
+
+            action = self._approval.check(tc)
+
+            if action == ApprovalAction.EXECUTE:
+                await self.hooks.on_tool_call(self.name, tc)
+                approved.append(tc)
+
+            elif action == ApprovalAction.DENY:
+                await self.hooks.on_approval_result(
+                    self.name,
+                    ApprovalResult(
+                        tool_call_id=tc.id,
+                        tool_name=tc.name,
+                        decision=ApprovalDecision.DENY,
+                        reason="Not allowed by policy.",
+                    ),
+                )
+                denied_results.append(ToolResult(
+                    tool_call_id=tc.id,
+                    content=f"Tool '{tc.name}' is not allowed by policy.",
+                    is_error=True,
+                ))
+
+            else:  # ApprovalAction.ASK
+                assert self._approval_handler is not None
+                request = ApprovalRequest(tool_call=tc, agent_name=self.name)
+                await self.hooks.on_approval_request(self.name, request)
+
+                try:
+                    result = await self._approval_handler.request_approval(request)
+                except Exception as e:
+                    logger.warning("Approval handler failed for '%s': %s", tc.name, e)
+                    result = ApprovalResult(
+                        tool_call_id=tc.id,
+                        tool_name=tc.name,
+                        decision=ApprovalDecision.DENY,
+                        reason=f"Approval handler error: {e}",
+                    )
+
+                await self.hooks.on_approval_result(self.name, result)
+
+                if result.decision == ApprovalDecision.ALLOW_ONCE:
+                    await self.hooks.on_tool_call(self.name, tc)
+                    approved.append(tc)
+                elif result.decision == ApprovalDecision.ALLOW_SESSION:
+                    self._approval.grant_session(tc.name)
+                    await self.hooks.on_tool_call(self.name, tc)
+                    approved.append(tc)
+                else:
+                    reason = result.reason or "Denied by user."
+                    denied_results.append(ToolResult(
+                        tool_call_id=tc.id,
+                        content=f"Tool '{tc.name}' was denied: {reason}",
+                        is_error=True,
+                    ))
+
+        results: list[ToolResult] = []
+        if approved:
+            results = await self.tool_executor.execute_batch(approved)
+
+        all_results = denied_results + results
+        result_map = {r.tool_call_id: r for r in all_results}
+        ordered = [result_map[tc.id] for tc in tool_calls]
 
         self.context.state.transition(AgentState.OBSERVING)
 
-        for result in results:
-            await self.hooks.on_tool_result(self.name, result)
-            # Store tool result as a message
+        for r in ordered:
+            await self.hooks.on_tool_result(self.name, r)
             await self.context.short_term_memory.add_message(
                 Message.tool(
-                    tool_call_id=result.tool_call_id,
-                    content=result.content,
-                    is_error=result.is_error,
+                    tool_call_id=r.tool_call_id,
+                    content=r.content,
+                    is_error=r.is_error,
                 )
             )
 
-        return results
+        return ordered
 
     def __repr__(self) -> str:
         return f"<{self.__class__.__name__} name={self.name!r} tools={len(self.tools)}>"

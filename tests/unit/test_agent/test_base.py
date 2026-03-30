@@ -5,19 +5,26 @@ Covers:
 - Usage accumulation across steps
 - PlanAgent state reset on re-run
 - use_long_term_memory instance flag
+- Approval integration
 """
 from __future__ import annotations
 
 import pytest
 
-from agent_harness.hooks import DefaultHooks, TracingHooks
 from agent_harness.agent.base import StepResult
 from agent_harness.agent.conversational import ConversationalAgent
+from agent_harness.approval import (
+    ApprovalDecision,
+    ApprovalHandler,
+    ApprovalPolicy,
+    ApprovalRequest,
+    ApprovalResult,
+)
+from agent_harness.context.state import AgentState
 from agent_harness.core.config import HarnessConfig, LLMConfig, TracingConfig
 from agent_harness.core.message import Message
-from agent_harness.context.state import AgentState
-from agent_harness.llm.types import Usage
-from tests.conftest import MockLLM
+from agent_harness.hooks import DefaultHooks, TracingHooks
+from tests.conftest import MockLLM, MockTool
 
 
 class _FailsOnceAgent(ConversationalAgent):
@@ -332,3 +339,165 @@ class TestAgentConfigPropagation:
         assert agent.llm is explicit_llm
         assert result.output == "explicit"
         assert called["value"] is False
+
+
+class _MockApprovalHandler(ApprovalHandler):
+    def __init__(self, decisions: dict[str, ApprovalDecision]) -> None:
+        self._decisions = decisions
+        self.call_count = 0
+
+    async def request_approval(self, request: ApprovalRequest) -> ApprovalResult:
+        self.call_count += 1
+        decision = self._decisions.get(
+            request.tool_call.name, ApprovalDecision.ALLOW_ONCE
+        )
+        return ApprovalResult(tool_call_id=request.tool_call.id, decision=decision)
+
+
+class TestApprovalIntegration:
+    @pytest.mark.asyncio
+    async def test_no_approval_passthrough(self) -> None:
+        from agent_harness.agent.react import ReActAgent
+
+        llm = MockLLM()
+        tool = MockTool(response="ok")
+        llm.add_tool_call_response("mock_tool", {"query": "test"})
+        llm.add_text_response("done")
+
+        agent = ReActAgent(name="test", llm=llm, tools=[tool], system_prompt="")
+        result = await agent.run("go")
+        assert result.output == "done"
+        assert len(tool.call_history) == 1
+
+    @pytest.mark.asyncio
+    async def test_deny_returns_error_result(self) -> None:
+        from agent_harness.agent.react import ReActAgent
+
+        llm = MockLLM()
+        tool = MockTool(response="ok")
+        handler = _MockApprovalHandler({"mock_tool": ApprovalDecision.DENY})
+
+        llm.add_tool_call_response("mock_tool", {"query": "test"})
+        llm.add_text_response("tool was denied")
+
+        agent = ReActAgent(
+            name="test", llm=llm, tools=[tool], system_prompt="",
+            approval=ApprovalPolicy(), approval_handler=handler,
+        )
+        result = await agent.run("go")
+
+        assert result.output == "tool was denied"
+        assert len(tool.call_history) == 0
+        assert handler.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_allow_session_remembered(self) -> None:
+        from agent_harness.agent.react import ReActAgent
+
+        llm = MockLLM()
+        tool = MockTool(response="ok")
+        handler = _MockApprovalHandler({"mock_tool": ApprovalDecision.ALLOW_SESSION})
+
+        llm.add_tool_call_response("mock_tool", {"query": "a"})
+        llm.add_tool_call_response("mock_tool", {"query": "b"})
+        llm.add_text_response("done")
+
+        agent = ReActAgent(
+            name="test", llm=llm, tools=[tool], system_prompt="",
+            approval=ApprovalPolicy(), approval_handler=handler,
+        )
+        result = await agent.run("go")
+
+        assert result.output == "done"
+        assert len(tool.call_history) == 2
+        assert handler.call_count == 1  # Second call was auto-approved
+
+    @pytest.mark.asyncio
+    async def test_always_allow_skips_handler(self) -> None:
+        from agent_harness.agent.react import ReActAgent
+
+        llm = MockLLM()
+        tool = MockTool(response="ok")
+        handler = _MockApprovalHandler({})
+
+        llm.add_tool_call_response("mock_tool", {"query": "test"})
+        llm.add_text_response("done")
+
+        agent = ReActAgent(
+            name="test", llm=llm, tools=[tool], system_prompt="",
+            approval=ApprovalPolicy(always_allow={"mock_tool"}),
+            approval_handler=handler,
+        )
+        await agent.run("go")
+
+        assert handler.call_count == 0
+        assert len(tool.call_history) == 1
+
+    @pytest.mark.asyncio
+    async def test_always_deny_blocks_without_handler(self) -> None:
+        from agent_harness.agent.react import ReActAgent
+
+        llm = MockLLM()
+        tool = MockTool(response="ok")
+        handler = _MockApprovalHandler({})
+
+        llm.add_tool_call_response("mock_tool", {"query": "test"})
+        llm.add_text_response("denied")
+
+        agent = ReActAgent(
+            name="test", llm=llm, tools=[tool], system_prompt="",
+            approval=ApprovalPolicy(always_deny={"mock_tool"}),
+            approval_handler=handler,
+        )
+        result = await agent.run("go")
+
+        assert result.output == "denied"
+        assert handler.call_count == 0
+        assert len(tool.call_history) == 0
+
+    @pytest.mark.asyncio
+    async def test_handler_failure_degrades_to_deny(self) -> None:
+        from agent_harness.agent.react import ReActAgent
+
+        class _FailingHandler(ApprovalHandler):
+            async def request_approval(self, request: ApprovalRequest) -> ApprovalResult:
+                raise RuntimeError("stdin closed")
+
+        llm = MockLLM()
+        tool = MockTool(response="ok")
+        llm.add_tool_call_response("mock_tool", {"query": "test"})
+        llm.add_text_response("handler failed")
+
+        agent = ReActAgent(
+            name="test", llm=llm, tools=[tool], system_prompt="",
+            approval=ApprovalPolicy(), approval_handler=_FailingHandler(),
+        )
+        result = await agent.run("go")
+
+        assert result.output == "handler failed"
+        assert len(tool.call_history) == 0
+
+    @pytest.mark.asyncio
+    async def test_config_driven_approval(self) -> None:
+        from agent_harness.core.config import ApprovalConfig
+
+        config = HarnessConfig(
+            approval=ApprovalConfig(mode="auto", always_allow=["mock_tool"]),
+            tracing=TracingConfig(enabled=False),
+        )
+        llm = MockLLM()
+        tool = MockTool(response="ok")
+        llm.add_tool_call_response("mock_tool", {"query": "test"})
+        llm.add_text_response("done")
+
+        from agent_harness.agent.react import ReActAgent
+
+        agent = ReActAgent(
+            name="test", llm=llm, tools=[tool], system_prompt="",
+            config=config,
+        )
+        # mock_tool in always_allow → no handler needed → no prompt
+        assert agent._approval is not None
+        result = await agent.run("go")
+        assert result.output == "done"
+        assert len(tool.call_history) == 1

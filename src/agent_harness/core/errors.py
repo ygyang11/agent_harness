@@ -120,6 +120,10 @@ class CyclicDependencyError(OrchestrationError):
 class AgentError(HarnessError):
     """Error during agent execution."""
 
+class ApprovalError(HarnessError):
+    """Error during the approval process (e.g., handler failure)."""
+
+
 class MaxStepsExceededError(AgentError):
     """Agent exceeded maximum allowed steps."""
     def __init__(

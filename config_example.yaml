@@ -56,7 +56,17 @@ skill:
   dirs:                           # Skill directories to scan (must end with "skills")
     - "skills"                    # Project root skills/ (default)
     # - "/path/to/shared/skills"  # Team-shared skills
-    # - "~/.my-agent/skills"      # Personal skills
+    # - "~/.agent-harness/skills"      # Personal skills
+
+# --- Approval (Human-in-the-Loop) ---
+approval:
+  mode: "never"                 # "never" — no approval prompts (default)
+                                # "auto"  — ask for tools not in always_allow
+                                # "always" — ask for every tool call
+  always_allow:                 # Tool names that skip approval (auto/always modes)
+    # - "web_search"
+  always_deny:                  # Tool names that are always blocked
+    # - "delete_file"
 
 # --- Tracing & Observability ---
 tracing:

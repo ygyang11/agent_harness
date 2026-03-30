@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from agent_harness.approval.types import ApprovalRequest, ApprovalResult
     from agent_harness.core.message import ToolCall
     from agent_harness.llm.types import StreamDelta
 
@@ -54,6 +55,16 @@ class DefaultHooks:
         pass
 
     async def on_dag_node_end(self, node_id: str) -> None:
+        pass
+
+    async def on_approval_request(
+        self, agent_name: str, request: ApprovalRequest
+    ) -> None:
+        pass
+
+    async def on_approval_result(
+        self, agent_name: str, result: ApprovalResult
+    ) -> None:
         pass
 
     async def on_team_start(self, team_name: str, mode: str) -> None:
