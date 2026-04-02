@@ -63,18 +63,38 @@ class PlanAndExecuteAgent(BaseAgent):
 
         from agent_harness.session.base import resolve_session
 
-        session = resolve_session(session)
+        resolved_session: BaseSession | None = resolve_session(session)
+        compressor = self.context.short_term_memory.compressor
+        if resolved_session and compressor:
+            compressor.bind_session(resolved_session.session_id)
 
         if self.context.state.is_terminal:
             self.context.state.reset()
 
-        if session and not await self.context.short_term_memory.get_context_messages():
-            state = await session.load_state()
+        if (
+            resolved_session
+            and not await self.context.short_term_memory.get_context_messages()
+        ):
+            state = await resolved_session.load_state()
             if state:
                 await self.context.restore_from_state(state, self.system_prompt)
                 self._session_created_at = state.created_at
+                restored_compressor = self.context.short_term_memory.compressor
+                if restored_compressor:
+                    restored_compressor.restore_runtime_state(state.messages)
 
-        input_text = input if isinstance(input, str) else (input.content or "")
+        if isinstance(input, str):
+            input_msg = Message.user(input)
+            input_text = input
+        else:
+            input_msg = input
+            input_text = input.content or ""
+
+        if await self._should_inject_system_prompt():
+            await self.context.short_term_memory.add_message(
+                Message.system(self.system_prompt)
+            )
+        await self.context.short_term_memory.add_message(input_msg)
 
         self.context.state.transition(AgentState.THINKING)
         await self.hooks.on_run_start(self.name, input_text)
@@ -233,6 +253,9 @@ class PlanAndExecuteAgent(BaseAgent):
             if not final_output:
                 final_output = plan.progress_summary
 
+            await self.context.short_term_memory.add_message(
+                Message.assistant(final_output)
+            )
             self.context.state.transition(AgentState.FINISHED)
             messages = await self.context.short_term_memory.get_context_messages()
 
@@ -265,14 +288,14 @@ class PlanAndExecuteAgent(BaseAgent):
             raise
 
         finally:
-            if session:
+            if resolved_session:
                 now = datetime.now()
                 ss = self.context.to_session_state(
-                    session.session_id, agent_name=self.name,
+                    resolved_session.session_id, agent_name=self.name,
                 )
                 ss.created_at = self._session_created_at or now
                 ss.updated_at = now
-                await session.save_state(ss)
+                await resolved_session.save_state(ss)
 
     @staticmethod
     def _step_signature(step: PlanStep) -> tuple[str, str]:

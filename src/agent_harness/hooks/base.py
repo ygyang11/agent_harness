@@ -67,6 +67,18 @@ class DefaultHooks:
     ) -> None:
         pass
 
+    async def on_compression_start(self, agent_name: str) -> None:
+        pass
+
+    async def on_compression_end(
+        self,
+        agent_name: str,
+        original_count: int,
+        compressed_count: int,
+        summary_tokens: int,
+    ) -> None:
+        pass
+
     async def on_team_start(self, team_name: str, mode: str) -> None:
         pass
 

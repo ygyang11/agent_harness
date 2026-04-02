@@ -64,10 +64,11 @@ class TestToolConfig:
 class TestMemoryConfig:
     def test_defaults(self) -> None:
         cfg = MemoryConfig()
-        assert cfg.short_term_max_messages == 50
-        assert cfg.short_term_max_tokens == 8000
-        assert cfg.short_term_strategy == "sliding_window"
+        assert cfg.max_tokens == 100000
+        assert cfg.strategy == "summarize"
         assert cfg.forget_threshold == 0.3
+        assert cfg.compression.threshold == 0.75
+        assert cfg.compression.retain_count == 6
 
 
 class TestTracingConfig:
@@ -84,7 +85,7 @@ class TestHarnessConfig:
         assert cfg.verbose is False
         assert cfg.llm.provider == "openai"
         assert cfg.tool.max_concurrency == 5
-        assert cfg.memory.short_term_max_messages == 50
+        assert cfg.memory.max_tokens == 100000
         assert cfg.tracing.enabled is True
 
     def test_from_env_llm_settings(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -139,11 +140,11 @@ class TestHarnessConfig:
         assert merged.llm.temperature == 0.2
 
     def test_merge_deep_nested(self) -> None:
-        base = HarnessConfig(memory=MemoryConfig(short_term_max_messages=100))
-        other = HarnessConfig(memory=MemoryConfig(short_term_max_tokens=4000))
+        base = HarnessConfig(memory=MemoryConfig(max_tokens=200000))
+        other = HarnessConfig(memory=MemoryConfig(forget_threshold=0.5))
         merged = base.merge(other)
-        assert merged.memory.short_term_max_messages == 100
-        assert merged.memory.short_term_max_tokens == 4000
+        assert merged.memory.max_tokens == 200000
+        assert merged.memory.forget_threshold == 0.5
 
     def test_from_yaml_file_not_found(self) -> None:
         with pytest.raises(FileNotFoundError):

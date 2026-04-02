@@ -82,13 +82,29 @@ class ToolConfig(BaseModel):
     sandbox_enabled: bool = False
 
 
+class CompressionConfig(BaseModel):
+    """Configuration for context compression (strategy='summarize')."""
+
+    threshold: float = 0.75
+    retain_count: int = 6
+    summary_model: str | None = None
+    summary_max_tokens: int | None = None
+
+    @field_validator("summary_model", mode="before")
+    @classmethod
+    def _blank_to_none(cls, value: str | None) -> str | None:
+        if isinstance(value, str) and value.strip() == "":
+            return None
+        return value
+
+
 class MemoryConfig(BaseModel):
     """Configuration for the memory system."""
 
-    short_term_max_messages: int = 50
-    short_term_max_tokens: int = 8000
-    short_term_strategy: str = "sliding_window"  # sliding_window | token_limit
+    max_tokens: int = 100000
+    strategy: str = "summarize"  # "trim" | "summarize"
     forget_threshold: float = 0.3
+    compression: CompressionConfig = Field(default_factory=CompressionConfig)
 
 
 class SearchConfig(BaseModel):

@@ -2,17 +2,21 @@
 from __future__ import annotations
 
 import json
+
 import pytest
 
 from agent_harness.agent.planner import Plan, PlanAndExecuteAgent, PlanStep
+from agent_harness.context.context import AgentContext
 from agent_harness.core.message import Message
 from agent_harness.llm.types import FinishReason, LLMResponse, Usage
+from agent_harness.session.base import SessionState
+from agent_harness.session.memory_session import InMemorySession
 from agent_harness.utils.token_counter import count_tokens
 
 from tests.conftest import MockLLM, MockTool
 
 
-def _make_json_response(data: dict) -> LLMResponse:
+def _make_json_response(data: dict[str, object]) -> LLMResponse:
     """Build an LLMResponse containing a JSON string."""
     return LLMResponse(
         message=Message.assistant(json.dumps(data)),
@@ -73,8 +77,134 @@ class TestPlanAndExecuteAgent:
         
         agent = PlanAndExecuteAgent(name="test_agent", llm=llm, max_steps=5)
         result = await agent.run("Do it")
-        
+
         assert result.output == "Task Complete"
+
+    @pytest.mark.asyncio
+    async def test_plan_run_records_root_input_and_final_output(self) -> None:
+        llm = MockLLM()
+        llm.responses.append(
+            _make_json_response(
+                {
+                    "goal": "Test Goal",
+                    "steps": [{"id": "1", "description": "Step 1"}],
+                }
+            )
+        )
+        llm.responses.append(_make_text_response("Step 1 execution result"))
+        llm.responses.append(
+            _make_json_response(
+                {
+                    "goal_achieved": True,
+                    "final_answer": "Task Complete",
+                }
+            )
+        )
+
+        agent = PlanAndExecuteAgent(name="test_agent", llm=llm, max_steps=5)
+        result = await agent.run("Do it")
+
+        messages = await agent.context.short_term_memory.get_context_messages()
+        assert any(
+            msg.role.value == "user" and msg.content == "Do it"
+            for msg in messages
+        )
+        assert any(
+            msg.role.value == "assistant" and msg.content == result.output
+            for msg in messages
+        )
+
+    @pytest.mark.asyncio
+    async def test_plan_run_restores_session_before_forking_children(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        llm = MockLLM()
+        llm.responses.append(
+            _make_json_response(
+                {
+                    "goal": "Test Goal",
+                    "steps": [{"id": "1", "description": "Step 1"}],
+                }
+            )
+        )
+        llm.responses.append(_make_text_response("Step 1 execution result"))
+        llm.responses.append(
+            _make_json_response(
+                {
+                    "goal_achieved": True,
+                    "final_answer": "Task Complete",
+                }
+            )
+        )
+
+        agent = PlanAndExecuteAgent(name="test_agent", llm=llm, max_steps=5)
+        session = InMemorySession("s1")
+        await session.save_state(
+            SessionState(
+                session_id="s1",
+                messages=[
+                    Message.system(
+                        "summary",
+                        metadata={
+                            "is_compression_summary": True,
+                            "compression_round": 2,
+                            "archive_paths": ["/tmp/r1.md", "/tmp/r2.md"],
+                        },
+                    )
+                ],
+            )
+        )
+
+        observed_rounds: list[int | None] = []
+        observed_session_ids: list[str | None] = []
+        original_fork = agent.context.fork
+
+        def recording_fork(name: str | None = None) -> AgentContext:
+            compressor = agent.context.short_term_memory.compressor
+            observed_rounds.append(
+                compressor._compression_count if compressor is not None else None
+            )
+            observed_session_ids.append(
+                compressor._session_id if compressor is not None else None
+            )
+            return original_fork(name)
+
+        monkeypatch.setattr(agent.context, "fork", recording_fork)
+
+        await agent.run("Do it", session=session)
+
+        assert observed_rounds == [2, 2, 2]
+        assert observed_session_ids == ["s1", "s1", "s1"]
+
+    @pytest.mark.asyncio
+    async def test_plan_run_saves_non_empty_root_messages(self) -> None:
+        llm = MockLLM()
+        llm.responses.append(
+            _make_json_response(
+                {
+                    "goal": "Test Goal",
+                    "steps": [{"id": "1", "description": "Step 1"}],
+                }
+            )
+        )
+        llm.responses.append(_make_text_response("Step 1 execution result"))
+        llm.responses.append(
+            _make_json_response(
+                {
+                    "goal_achieved": True,
+                    "final_answer": "Task Complete",
+                }
+            )
+        )
+
+        agent = PlanAndExecuteAgent(name="test_agent", llm=llm, max_steps=5)
+        session = InMemorySession("s1")
+
+        await agent.run("Do it", session=session)
+
+        state = await session.load_state()
+        assert state is not None
+        assert len(state.messages) >= 2
 
     @pytest.mark.asyncio
     async def test_multi_step_execution(self) -> None:

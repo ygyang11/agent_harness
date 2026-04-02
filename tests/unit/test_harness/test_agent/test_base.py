@@ -20,8 +20,9 @@ from agent_harness.approval import (
     ApprovalRequest,
     ApprovalResult,
 )
+from agent_harness.context.context import AgentContext
 from agent_harness.context.state import AgentState
-from agent_harness.core.config import HarnessConfig, LLMConfig, TracingConfig
+from agent_harness.core.config import HarnessConfig, LLMConfig, MemoryConfig, TracingConfig
 from agent_harness.core.message import Message
 from agent_harness.hooks import DefaultHooks, TracingHooks
 from tests.conftest import MockLLM, MockTool
@@ -214,6 +215,24 @@ class TestAgentConfigPropagation:
             assert HarnessConfig.get().tracing.enabled is True
         finally:
             HarnessConfig._instance = original_instance
+
+    @pytest.mark.asyncio
+    async def test_explicit_context_still_initializes_compressor_under_summarize_strategy(
+        self,
+    ) -> None:
+        cfg = HarnessConfig(memory=MemoryConfig(strategy="summarize"))
+        llm = MockLLM()
+        llm.add_text_response("answer")
+        ctx = AgentContext.create(config=cfg)
+
+        agent = ConversationalAgent(
+            name="test",
+            llm=llm,
+            system_prompt="",
+            context=ctx,
+        )
+
+        assert agent.context.short_term_memory.compressor is not None
 
     @pytest.mark.asyncio
     async def test_agent_silently_reuses_active_global_config(self) -> None:

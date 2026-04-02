@@ -77,6 +77,22 @@ class CompositeHooks(DefaultHooks):
         for h in self._hooks:
             await h.on_dag_node_end(node_id)
 
+    async def on_compression_start(self, agent_name: str) -> None:
+        for h in self._hooks:
+            await h.on_compression_start(agent_name)
+
+    async def on_compression_end(
+        self,
+        agent_name: str,
+        original_count: int,
+        compressed_count: int,
+        summary_tokens: int,
+    ) -> None:
+        for h in self._hooks:
+            await h.on_compression_end(
+                agent_name, original_count, compressed_count, summary_tokens
+            )
+
     async def on_approval_request(
         self, agent_name: str, request: ApprovalRequest
     ) -> None:

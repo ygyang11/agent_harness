@@ -149,17 +149,44 @@ class BaseAgent(ABC, EventEmitter):
         self.tool_executor.set_event_bus(self.context.event_bus)
         self.llm.set_event_bus(self.context.event_bus)
 
+        # Context compression setup
+        if (
+            self.context.config.memory.strategy == "summarize"
+            and self.context.short_term_memory.compressor is None
+        ):
+            self._init_compressor()
+
+    def _init_compressor(self) -> None:
+        from agent_harness.memory.compressor import create_compressor
+
+        comp_cfg = self.context.config.memory.compression
+        summary_llm = self.llm
+        if comp_cfg.summary_model:
+            summary_llm = create_llm(
+                self.context.config,
+                model_override=comp_cfg.summary_model,
+            )
+        compressor = create_compressor(
+            llm=summary_llm,
+            memory_config=self.context.config.memory,
+            model=self.context.config.llm.model,
+        )
+        self.context.short_term_memory.compressor = compressor
+        self.context._compressor = compressor
+
     @staticmethod
     def _has_skill_tool(tools: list[BaseTool]) -> bool:
         return any(t.name == "skill_tool" for t in tools)
 
     @property
     def tools(self) -> list[BaseTool]:
-        return self.tool_registry.list_tools()
+        tools: list[BaseTool] = self.tool_registry.list_tools()
+        return tools
 
     @property
     def tool_schemas(self) -> list[ToolSchema]:
-        return self.tool_registry.get_schemas()
+        schemas: list[ToolSchema] = self.tool_registry.get_schemas()
+        return schemas
 
     async def _should_inject_system_prompt(self) -> bool:
         if not self.system_prompt:
@@ -194,18 +221,30 @@ class BaseAgent(ABC, EventEmitter):
         """
         from agent_harness.session.base import resolve_session
 
-        session = resolve_session(session)
+        resolved_session: BaseSession | None = resolve_session(session)
+
+        # Propagate session_id to compressor for archive binding
+        if resolved_session and self.context.short_term_memory.compressor:
+            self.context.short_term_memory.compressor.bind_session(
+                resolved_session.session_id
+            )
 
         # Reset state for agent reuse (e.g., team orchestration, pipelines)
         if self.context.state.is_terminal:
             self.context.state.reset()
 
         # Session restore: only when context is empty (first call or cross-process)
-        if session and not await self.context.short_term_memory.get_context_messages():
-            state = await session.load_state()
+        if (
+            resolved_session
+            and not await self.context.short_term_memory.get_context_messages()
+        ):
+            state = await resolved_session.load_state()
             if state:
                 await self.context.restore_from_state(state, self.system_prompt)
                 self._session_created_at = state.created_at
+                compressor = self.context.short_term_memory.compressor
+                if compressor:
+                    compressor.restore_runtime_state(state.messages)
 
         # Normalize input
         if isinstance(input, str):
@@ -261,14 +300,14 @@ class BaseAgent(ABC, EventEmitter):
             raise
 
         finally:
-            if session:
+            if resolved_session:
                 now = datetime.now()
                 ss = self.context.to_session_state(
-                    session.session_id, agent_name=self.name,
+                    resolved_session.session_id, agent_name=self.name,
                 )
                 ss.created_at = self._session_created_at or now
                 ss.updated_at = now
-                await session.save_state(ss)
+                await resolved_session.save_state(ss)
 
         messages = await self.context.short_term_memory.get_context_messages()
         result = AgentResult(
@@ -346,12 +385,31 @@ class BaseAgent(ABC, EventEmitter):
         if use_long_term is None:
             use_long_term = self.use_long_term_memory
 
+        # Notify before compression (if it will happen)
+        compressor = self.context.short_term_memory.compressor
+        if compressor and compressor.should_compress(
+            self.context.short_term_memory._messages,
+            self.context.short_term_memory.max_tokens,
+        ):
+            await self.hooks.on_compression_start(self.name)
+
         messages = await self.context.build_llm_messages(
             base_messages=messages,
             include_working=True,
             include_long_term=use_long_term,
             long_term_query=long_term_query,
         )
+
+        # Notify after compression (if it happened)
+        if compressor:
+            comp_result = compressor.take_last_result()
+            if comp_result:
+                await self.hooks.on_compression_end(
+                    self.name,
+                    comp_result.original_count,
+                    comp_result.compressed_count,
+                    comp_result.summary_tokens,
+                )
 
         if tools is None and self.tool_schemas:
             tools = self.tool_schemas

@@ -10,9 +10,11 @@ from agent_harness.core.config import HarnessConfig
 from agent_harness.core.event import EventBus
 from agent_harness.core.message import Message, Role
 from agent_harness.memory.short_term import ShortTermMemory
+from agent_harness.utils.token_counter import count_messages_tokens
 from agent_harness.memory.working_term import WorkingMemory
 
 if TYPE_CHECKING:
+    from agent_harness.memory.compressor import ContextCompressor
     from agent_harness.memory.long_term import LongTermMemory
     from agent_harness.session.base import SessionState
     from agent_harness.tracing.tracer import Tracer
@@ -42,13 +44,15 @@ class AgentContext:
         variables: ContextVariables | None = None,
         event_bus: EventBus | None = None,
         tracer: Tracer | None = None,
+        compressor: ContextCompressor | None = None,
     ) -> None:
         self.config = config or HarnessConfig.get()
+        self._compressor = compressor
+        self._fork_seq = 0
         self.short_term_memory = short_term_memory or ShortTermMemory(
-            max_messages=self.config.memory.short_term_max_messages,
-            max_tokens=self.config.memory.short_term_max_tokens,
-            strategy=self.config.memory.short_term_strategy,
+            max_tokens=self.config.memory.max_tokens,
             model=self.config.llm.model,
+            compressor=compressor,
         )
         self.long_term_memory = long_term_memory
         self.working_memory = working_memory or WorkingMemory()
@@ -78,13 +82,17 @@ class AgentContext:
         - state (independent state machine)
         """
         child_vars = self.variables.fork()
+        child_compressor = None
+        if self._compressor is not None:
+            child_scope = self._next_fork_scope(name)
+            child_compressor = self._compressor.clone(scope=child_scope)
+
         return AgentContext(
             config=self.config,
             short_term_memory=ShortTermMemory(
-                max_messages=self.config.memory.short_term_max_messages,
-                max_tokens=self.config.memory.short_term_max_tokens,
-                strategy=self.config.memory.short_term_strategy,
+                max_tokens=self.config.memory.max_tokens,
                 model=self.config.llm.model,
+                compressor=child_compressor,
             ),
             long_term_memory=self.long_term_memory,
             working_memory=WorkingMemory(),
@@ -92,7 +100,15 @@ class AgentContext:
             variables=child_vars,
             event_bus=self.event_bus,
             tracer=self.tracer,
+            compressor=child_compressor,
         )
+
+    def _next_fork_scope(self, name: str | None) -> str:
+        if name:
+            return name
+
+        self._fork_seq += 1
+        return f"child_{self._fork_seq:02d}"
 
     def to_session_state(self, session_id: str, **metadata: Any) -> SessionState:
         from agent_harness.context.variables import Scope
@@ -203,5 +219,30 @@ class AgentContext:
                         messages = messages[:inject_idx] + [lt_msg] + messages[inject_idx:]
                 except Exception as e:
                     logger.warning("Failed to query long-term memory: %s", e)
+
+        # Final token budget guard after all injections (atomic-group aware)
+        max_tokens = self.config.memory.max_tokens
+        total = count_messages_tokens(messages, self.config.llm.model)
+        if total > max_tokens:
+            from agent_harness.memory.compressor import ContextCompressor
+
+            groups = ContextCompressor._group_atomic_pairs(messages)
+            system_groups = [g for g in groups if g.is_system]
+            non_system_groups = [g for g in groups if not g.is_system]
+
+            system_msgs = [m for g in system_groups for m in g.messages]
+            budget = max_tokens - count_messages_tokens(
+                system_msgs, self.config.llm.model
+            )
+            kept_groups: list[list[Message]] = []
+            for group in reversed(non_system_groups):
+                cost = count_messages_tokens(group.messages, self.config.llm.model)
+                if budget - cost < 0:
+                    break
+                kept_groups.append(group.messages)
+                budget -= cost
+            kept_groups.reverse()
+            kept = [m for group in kept_groups for m in group]
+            messages = system_msgs + kept
 
         return messages

@@ -44,6 +44,30 @@ class ProgressHooks(DefaultHooks):
             prefix = f"{yellow}⏺{reset2} " if self._tool_call_count == 1 else "  "
             self._write(f"{prefix}⚡ {bold}{tool_call.name}{reset}({args_preview})\n")
 
+    async def on_compression_start(self, agent_name: str) -> None:
+        if self._streaming:
+            self._output.write("\n")
+            self._output.flush()
+            self._streaming = False
+        dim, reset = self._c("dim"), self._c("reset")
+        self._write(
+            f"  {ICONS['summary']} {dim}Compressing context...{reset}\n"
+        )
+
+    async def on_compression_end(
+        self,
+        agent_name: str,
+        original_count: int,
+        compressed_count: int,
+        summary_tokens: int,
+    ) -> None:
+        dim, reset = self._c("dim"), self._c("reset")
+        self._write(
+            f"  {ICONS['summary']} {dim}Context compressed: "
+            f"{original_count} → {compressed_count} messages "
+            f"(~{summary_tokens} tokens){reset}\n"
+        )
+
     async def on_approval_request(
         self, agent_name: str, request: ApprovalRequest
     ) -> None:

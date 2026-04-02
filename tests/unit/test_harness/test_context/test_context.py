@@ -1,6 +1,8 @@
 """Tests for agent_harness.context.context — AgentContext create, fork, isolation."""
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
+
 import pytest
 
 from agent_harness.context.context import AgentContext
@@ -8,6 +10,7 @@ from agent_harness.context.state import AgentState
 from agent_harness.context.variables import ContextVariables, Scope
 from agent_harness.core.config import HarnessConfig, LLMConfig, MemoryConfig
 from agent_harness.core.event import EventBus
+from agent_harness.memory.compressor import ContextCompressor
 from agent_harness.memory.short_term import ShortTermMemory
 from agent_harness.memory.working_term import WorkingMemory
 
@@ -25,10 +28,10 @@ class TestAgentContextCreate:
         assert ctx.state.current == AgentState.IDLE
 
     def test_create_with_custom_config(self) -> None:
-        cfg = HarnessConfig(memory=MemoryConfig(short_term_max_messages=10))
+        cfg = HarnessConfig(memory=MemoryConfig(max_tokens=50000))
         ctx = AgentContext.create(config=cfg)
-        assert ctx.config.memory.short_term_max_messages == 10
-        assert ctx.short_term_memory.max_messages == 10
+        assert ctx.config.memory.max_tokens == 50000
+        assert ctx.short_term_memory.max_tokens == 50000
 
     def test_create_propagates_llm_model_to_short_term_memory(self) -> None:
         cfg = HarnessConfig(llm=LLMConfig(model="gpt-5-mini"))
@@ -37,18 +40,18 @@ class TestAgentContextCreate:
 
     def test_create_uses_active_harness_config_instance(self) -> None:
         original_instance = HarnessConfig._instance
-        cfg = HarnessConfig(memory=MemoryConfig(short_term_max_messages=7))
+        cfg = HarnessConfig(memory=MemoryConfig(max_tokens=50000))
         HarnessConfig._instance = cfg
         try:
             ctx = AgentContext.create()
             assert ctx.config is cfg
-            assert ctx.short_term_memory.max_messages == 7
+            assert ctx.short_term_memory.max_tokens == 50000
         finally:
             HarnessConfig._instance = original_instance
 
     def test_create_with_explicit_components(self) -> None:
         bus = EventBus()
-        stm = ShortTermMemory(max_messages=5)
+        stm = ShortTermMemory(max_tokens=5000)
         ctx = AgentContext(short_term_memory=stm, event_bus=bus)
         assert ctx.short_term_memory is stm
         assert ctx.event_bus is bus
@@ -80,6 +83,51 @@ class TestAgentContextFork:
         parent = AgentContext.create()
         child = parent.fork("child")
         assert child.short_term_memory is not parent.short_term_memory
+
+    def test_fork_clones_compressor_instead_of_sharing(self) -> None:
+        compressor = ContextCompressor(
+            llm=AsyncMock(),
+            threshold=0.75,
+            retain_count=4,
+            model="gpt-4o",
+        )
+        parent = AgentContext(compressor=compressor)
+
+        child = parent.fork("executor")
+
+        assert child.short_term_memory.compressor is not None
+        assert child.short_term_memory.compressor is not compressor
+
+    def test_fork_uses_name_as_scope_when_provided(self) -> None:
+        compressor = ContextCompressor(
+            llm=AsyncMock(),
+            threshold=0.75,
+            retain_count=4,
+            model="gpt-4o",
+        )
+        parent = AgentContext(compressor=compressor)
+
+        child = parent.fork("executor")
+
+        assert child._compressor is not None
+        assert child._compressor.scope == "executor"
+
+    def test_fork_assigns_numbered_scope_for_unnamed_child(self) -> None:
+        compressor = ContextCompressor(
+            llm=AsyncMock(),
+            threshold=0.75,
+            retain_count=4,
+            model="gpt-4o",
+        )
+        parent = AgentContext(compressor=compressor)
+
+        child1 = parent.fork()
+        child2 = parent.fork()
+
+        assert child1._compressor is not None
+        assert child2._compressor is not None
+        assert child1._compressor.scope == "child_01"
+        assert child2._compressor.scope == "child_02"
 
     @pytest.mark.asyncio
     async def test_fork_short_term_isolation(self) -> None:

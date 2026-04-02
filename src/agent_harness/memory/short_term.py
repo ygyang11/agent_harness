@@ -1,47 +1,50 @@
-"""Short-term memory: conversation buffer with sliding window and token limits."""
+"""Short-term memory: conversation buffer with optional compression and token trim."""
 from __future__ import annotations
 
+import logging
 import math
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from agent_harness.core.message import Message, Role
 from agent_harness.memory.base import BaseMemory, MemoryItem
 from agent_harness.memory.retrieval import HybridRetriever
 from agent_harness.utils.token_counter import count_messages_tokens
 
+if TYPE_CHECKING:
+    from agent_harness.memory.compressor import ContextCompressor
+
+logger = logging.getLogger(__name__)
+
 
 class ShortTermMemory(BaseMemory):
-    """Conversation buffer that maintains recent message history.
+    """Conversation buffer with optional LLM compression and token-based trim fallback.
 
-    Strategies:
-        - sliding_window: Keep the last N messages
-        - token_limit: Keep messages that fit within a token budget
+    When a ContextCompressor is attached, compression runs first
+    (preserving semantics). Token trim only runs as a safety net
+    after compression (or if compression fails/is not attached).
 
-    The system message (if present) is always preserved regardless of strategy.
+    The system message (if present) is always preserved by the trim fallback.
     """
 
     def __init__(
         self,
-        max_messages: int = 50,
-        max_tokens: int = 8000,
-        strategy: str = "sliding_window",
+        max_tokens: int = 100000,
         model: str = "gpt-4o",
+        compressor: ContextCompressor | None = None,
     ) -> None:
-        self.max_messages = max_messages
         self.max_tokens = max_tokens
-        self.strategy = strategy
         self.model = model
         self._messages: list[Message] = []
+        self.compressor = compressor
 
     async def add(self, content: str, metadata: dict[str, Any] | None = None) -> None:
         """Add text content as a user message."""
         await self.add_message(Message.user(content, metadata=metadata or {}))
 
     async def add_message(self, message: Message) -> None:
-        """Add a message to the conversation buffer."""
+        """Append a message. No trimming — trimming happens at the exit point."""
         self._messages.append(message)
-        self._trim()
 
     async def query(self, query: str, top_k: int = 5) -> list[MemoryItem]:
         """Query messages using hybrid retrieval (TF-IDF + keyword fallback)."""
@@ -58,17 +61,34 @@ class ShortTermMemory(BaseMemory):
         if not items:
             return []
         retriever = HybridRetriever()
-        return retriever.retrieve(query, items, top_k=top_k)
+        results: list[MemoryItem] = retriever.retrieve(query, items, top_k=top_k)
+        return results
 
     async def get_context_messages(self) -> list[Message]:
-        """Get messages suitable for LLM context, respecting limits."""
-        return list(self._get_trimmed_messages())
+        """Get messages suitable for LLM context, respecting limits.
+
+        Flow: compress (if attached and threshold hit) → trim fallback.
+        """
+        if self.compressor and self.compressor.should_compress(
+            self._messages, self.max_tokens
+        ):
+            try:
+                self._messages = await self.compressor.compress(self._messages)
+            except Exception as e:
+                logger.warning(
+                    "Context compression failed; falling back to token trim: %s",
+                    e,
+                    exc_info=True,
+                )
+
+        self._trim_by_tokens()
+        return list(self._messages)
 
     async def clear(self) -> None:
         self._messages.clear()
 
     async def forget(self, threshold: float = 0.3) -> int:
-        """Remove old messages with low weighted score, then apply trim.
+        """Remove old messages with low weighted score.
 
         System messages are always preserved.
         """
@@ -89,50 +109,38 @@ class ShortTermMemory(BaseMemory):
                 kept.append(msg)
 
         self._messages = kept
-        self._trim()
         return original_count - len(self._messages)
 
     async def size(self) -> int:
         return len(self._messages)
 
-    def _trim(self) -> None:
-        """Apply the configured trimming strategy."""
-        if self.strategy == "sliding_window":
-            self._trim_sliding_window()
-        elif self.strategy == "token_limit":
-            self._trim_token_limit()
+    def _trim_by_tokens(self) -> None:
+        """Keep system messages + most recent atomic groups within token budget.
 
-    def _trim_sliding_window(self) -> None:
-        """Keep system message + last N messages."""
-        if len(self._messages) <= self.max_messages:
+        Uses atomic grouping to avoid splitting tool_call + tool_result pairs.
+        Only trims when total tokens exceed max_tokens.
+        """
+        from agent_harness.memory.compressor import ContextCompressor
+
+        current = count_messages_tokens(self._messages, self.model)
+        if current <= self.max_tokens:
             return
 
-        system_msgs = [m for m in self._messages if m.role == Role.SYSTEM]
-        non_system = [m for m in self._messages if m.role != Role.SYSTEM]
+        groups = ContextCompressor._group_atomic_pairs(self._messages)
+        system_groups = [g for g in groups if g.is_system]
+        non_system_groups = [g for g in groups if not g.is_system]
 
-        # Keep system messages + most recent non-system messages
-        keep_count = self.max_messages - len(system_msgs)
-        self._messages = system_msgs + non_system[-keep_count:]
-
-    def _trim_token_limit(self) -> None:
-        """Keep system message + most recent messages within token budget."""
-        system_msgs = [m for m in self._messages if m.role == Role.SYSTEM]
-        non_system = [m for m in self._messages if m.role != Role.SYSTEM]
-
-        # Start from most recent, add messages until budget is exceeded
-        result: list[Message] = []
+        system_msgs = [m for g in system_groups for m in g.messages]
         budget = self.max_tokens - count_messages_tokens(system_msgs, self.model)
+        kept_groups: list[list[Message]] = []
 
-        for msg in reversed(non_system):
-            msg_tokens = count_messages_tokens([msg], self.model)
-            if budget - msg_tokens < 0:
+        for group in reversed(non_system_groups):
+            group_tokens = count_messages_tokens(group.messages, self.model)
+            if budget - group_tokens < 0:
                 break
-            result.append(msg)
-            budget -= msg_tokens
+            kept_groups.append(group.messages)
+            budget -= group_tokens
 
-        result.reverse()
-        self._messages = system_msgs + result
-
-    def _get_trimmed_messages(self) -> list[Message]:
-        """Return trimmed message list."""
-        return list(self._messages)
+        kept_groups.reverse()
+        kept_msgs = [m for group in kept_groups for m in group]
+        self._messages = system_msgs + kept_msgs

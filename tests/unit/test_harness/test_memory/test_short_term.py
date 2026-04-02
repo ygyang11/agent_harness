@@ -1,9 +1,14 @@
 """Tests for agent_harness.memory.short_term — ShortTermMemory buffer and trimming."""
 from __future__ import annotations
 
+import logging
+from unittest.mock import AsyncMock
+from unittest.mock import patch
+
 import pytest
 
 from agent_harness.core.message import Message, Role
+from agent_harness.memory.compressor import ContextCompressor
 from agent_harness.memory.short_term import ShortTermMemory
 
 
@@ -53,36 +58,40 @@ class TestShortTermMemoryBasic:
             await mem.add_message(Message.user(f"msg-{i}"))
         items = await mem.query("msg", top_k=3)
         assert len(items) == 3
-        # All returned items should be from the memory
         assert all("msg-" in item.content for item in items)
 
-
-class TestSlidingWindowTrim:
     @pytest.mark.asyncio
-    async def test_trim_keeps_max_messages(self) -> None:
-        mem = ShortTermMemory(max_messages=3)
-        for i in range(5):
-            await mem.add_message(Message.user(f"msg-{i}"))
+    async def test_add_message_does_not_trim(self) -> None:
+        """add_message only appends — no trimming until get_context_messages."""
+        mem = ShortTermMemory(max_tokens=50)
+        for i in range(20):
+            await mem.add_message(Message.user(f"message-{i} " * 10))
+        assert await mem.size() == 20
+
+
+class TestTokenTrim:
+    @pytest.mark.asyncio
+    async def test_trim_on_get_context(self) -> None:
+        """Token trimming happens in get_context_messages, not add_message."""
+        mem = ShortTermMemory(max_tokens=50)
+        for i in range(20):
+            await mem.add_message(Message.user(f"message-{i} " * 10))
         msgs = await mem.get_context_messages()
-        assert len(msgs) == 3
-        assert msgs[0].content == "msg-2"
-        assert msgs[-1].content == "msg-4"
+        assert len(msgs) < 20
 
     @pytest.mark.asyncio
     async def test_system_message_preserved(self) -> None:
-        mem = ShortTermMemory(max_messages=3)
+        mem = ShortTermMemory(max_tokens=100)
         await mem.add_message(Message.system("System prompt"))
-        for i in range(5):
-            await mem.add_message(Message.user(f"msg-{i}"))
+        for i in range(20):
+            await mem.add_message(Message.user(f"msg-{i} " * 10))
         msgs = await mem.get_context_messages()
-        # System message + 2 most recent non-system
-        assert len(msgs) == 3
         assert msgs[0].role == Role.SYSTEM
         assert msgs[0].content == "System prompt"
 
     @pytest.mark.asyncio
-    async def test_no_trim_when_under_limit(self) -> None:
-        mem = ShortTermMemory(max_messages=10)
+    async def test_no_trim_when_under_budget(self) -> None:
+        mem = ShortTermMemory(max_tokens=100000)
         await mem.add_message(Message.user("one"))
         await mem.add_message(Message.user("two"))
         msgs = await mem.get_context_messages()
@@ -90,27 +99,70 @@ class TestSlidingWindowTrim:
 
     @pytest.mark.asyncio
     async def test_multiple_system_messages(self) -> None:
-        mem = ShortTermMemory(max_messages=4)
+        mem = ShortTermMemory(max_tokens=200)
         await mem.add_message(Message.system("sys1"))
         await mem.add_message(Message.system("sys2"))
-        for i in range(5):
-            await mem.add_message(Message.user(f"u{i}"))
+        for i in range(20):
+            await mem.add_message(Message.user(f"u{i} " * 10))
         msgs = await mem.get_context_messages()
-        assert len(msgs) == 4
         sys_msgs = [m for m in msgs if m.role == Role.SYSTEM]
         assert len(sys_msgs) == 2
 
-
-class TestSlidingWindowDefaults:
     @pytest.mark.asyncio
-    async def test_default_strategy_is_sliding_window(self) -> None:
+    async def test_keeps_most_recent(self) -> None:
+        mem = ShortTermMemory(max_tokens=100)
+        for i in range(20):
+            await mem.add_message(Message.user(f"msg-{i} " * 10))
+        msgs = await mem.get_context_messages()
+        contents = [m.content for m in msgs]
+        assert "msg-19 " * 10 in contents[-1]
+
+
+class TestCompressorAttribute:
+    @pytest.mark.asyncio
+    async def test_compressor_default_none(self) -> None:
         mem = ShortTermMemory()
-        assert mem.strategy == "sliding_window"
+        assert mem.compressor is None
 
     @pytest.mark.asyncio
-    async def test_default_max_messages(self) -> None:
-        mem = ShortTermMemory()
-        assert mem.max_messages == 50
+    async def test_compressor_is_public(self) -> None:
+        from unittest.mock import AsyncMock
+
+        from agent_harness.memory.compressor import ContextCompressor
+
+        compressor = ContextCompressor(
+            llm=AsyncMock(), threshold=0.75, retain_count=4, model="gpt-4o",
+        )
+        mem = ShortTermMemory(max_tokens=500, compressor=compressor)
+        assert mem.compressor is compressor
+
+    @pytest.mark.asyncio
+    async def test_compression_failure_logs_warning_and_falls_back_to_trim(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        compressor = ContextCompressor(
+            llm=AsyncMock(),
+            threshold=0.0,
+            retain_count=4,
+            model="gpt-4o",
+        )
+
+        mem = ShortTermMemory(max_tokens=50, compressor=compressor)
+        for i in range(20):
+            await mem.add_message(Message.user(f"message-{i} " * 10))
+
+        with (
+            patch.object(
+                compressor,
+                "compress",
+                AsyncMock(side_effect=RuntimeError("boom")),
+            ),
+            caplog.at_level(logging.WARNING),
+        ):
+            msgs = await mem.get_context_messages()
+
+        assert len(msgs) > 0
+        assert "Context compression failed" in caplog.text
 
 
 class TestForgetImportanceScore:
@@ -118,8 +170,7 @@ class TestForgetImportanceScore:
 
     @pytest.mark.asyncio
     async def test_high_importance_retained(self) -> None:
-        """A message with high importance_score should be retained after forget."""
-        mem = ShortTermMemory(max_messages=50)
+        mem = ShortTermMemory()
         msg = Message.user("important", metadata={"importance_score": 0.9})
         await mem.add_message(msg)
         forgotten = await mem.forget(threshold=0.3)
@@ -128,43 +179,32 @@ class TestForgetImportanceScore:
 
     @pytest.mark.asyncio
     async def test_low_importance_forgotten(self) -> None:
-        """A message with low importance_score should be more easily forgotten."""
-        mem = ShortTermMemory(max_messages=50)
+        mem = ShortTermMemory()
         msg = Message.user("trivial", metadata={"importance_score": 0.1})
         await mem.add_message(msg)
-        # Use a high threshold so the low-importance message gets removed
         forgotten = await mem.forget(threshold=1.1)
         assert forgotten == 1
         assert await mem.size() == 0
 
     @pytest.mark.asyncio
     async def test_default_importance_when_missing(self) -> None:
-        """A message with no importance_score defaults to 0.5."""
-        mem = ShortTermMemory(max_messages=50)
+        mem = ShortTermMemory()
         msg_default = Message.user("default importance", metadata={})
         msg_explicit = Message.user("explicit 0.5", metadata={"importance_score": 0.5})
         await mem.add_message(msg_default)
         await mem.add_message(msg_explicit)
-        # Both should behave identically under forget
         forgotten = await mem.forget(threshold=0.3)
         assert forgotten == 0
         assert await mem.size() == 2
 
     @pytest.mark.asyncio
     async def test_importance_affects_weighted_score(self) -> None:
-        """Higher importance_score produces a higher weighted score, keeping
-        that message while a lower-importance one is forgotten."""
-        mem = ShortTermMemory(max_messages=50)
+        mem = ShortTermMemory()
         high = Message.user("high", metadata={"importance_score": 0.9})
         low = Message.user("low", metadata={"importance_score": 0.1})
         await mem.add_message(high)
         await mem.add_message(low)
-        # Pick a threshold that retains high-importance but drops low-importance.
-        # weighted ≈ time_decay * (0.8 + importance * 0.4)
-        # For recent msgs time_decay ≈ 1.0
-        # high: 1.0 * (0.8 + 0.9*0.4) = 1.16
-        # low:  1.0 * (0.8 + 0.1*0.4) = 0.84
-        forgotten = await mem.forget(threshold=0.9)
+        await mem.forget(threshold=0.9)
         msgs = await mem.get_context_messages()
         assert len(msgs) == 1
         assert msgs[0].content == "high"

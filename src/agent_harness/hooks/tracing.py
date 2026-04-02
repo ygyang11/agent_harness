@@ -281,6 +281,29 @@ class TracingHooks(DefaultHooks):
                 f"{'  ' * indent}• tool_result {{agent={agent_name}, output={truncated}}}\n"
             )
 
+    async def on_compression_start(self, agent_name: str) -> None:
+        if _streaming_active.get(False):
+            print("", file=sys.stderr)
+            _streaming_active.set(False)
+        indent = self._depth
+        self._cwrite(
+            f"{'  ' * indent}{ICONS['summary']} Compressing context...\n"
+        )
+
+    async def on_compression_end(
+        self,
+        agent_name: str,
+        original_count: int,
+        compressed_count: int,
+        summary_tokens: int,
+    ) -> None:
+        indent = self._depth
+        self._cwrite(
+            f"{'  ' * indent}{ICONS['summary']} Context compressed: "
+            f"{original_count} messages → {compressed_count} "
+            f"(summary: ~{summary_tokens} tokens)\n"
+        )
+
     async def on_approval_request(
         self, agent_name: str, request: ApprovalRequest
     ) -> None:
