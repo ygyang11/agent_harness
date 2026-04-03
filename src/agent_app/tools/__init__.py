@@ -1,4 +1,15 @@
 """Built-in tools for the agent application."""
+from agent_app.tools.filesystem import (
+    FILESYSTEM_TOOLS,
+    READONLY_FILESYSTEM_TOOLS,
+    WRITABLE_FILESYSTEM_TOOLS,
+    edit_file,
+    glob_files,
+    grep_files,
+    list_dir,
+    read_file,
+    write_file,
+)
 from agent_app.tools.paper_fetch import paper_fetch
 from agent_app.tools.paper_search import paper_search
 from agent_app.tools.pdf_parser import pdf_parser
@@ -20,10 +31,14 @@ BUILTIN_TOOLS: list[BaseTool] = [
     list_notes,
     read_notes,
     skill_tool,
+    *FILESYSTEM_TOOLS,
 ]
 
 __all__ = [
     "BUILTIN_TOOLS",
+    "FILESYSTEM_TOOLS",
+    "READONLY_FILESYSTEM_TOOLS",
+    "WRITABLE_FILESYSTEM_TOOLS",
     "terminal_tool",
     "web_fetch",
     "web_search",
@@ -34,4 +49,10 @@ __all__ = [
     "list_notes",
     "read_notes",
     "skill_tool",
+    "read_file",
+    "write_file",
+    "edit_file",
+    "list_dir",
+    "glob_files",
+    "grep_files",
 ]

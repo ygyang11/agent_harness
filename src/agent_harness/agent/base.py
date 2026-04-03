@@ -53,6 +53,29 @@ Rules:
 - Do not skip a matching skill because you believe you can handle the task without it
 - After loading a skill, follow its instructions to complete the task
 - If no skill matches, proceed normally with your available tools and knowledge""",
+
+    "filesystem_supplement": """
+
+## File Operations
+
+You have access to dedicated filesystem tools for reading, writing, editing, and searching files.
+
+### Following Conventions
+- Read files before editing — understand existing content before making changes
+- Mimic existing style, naming conventions, and patterns in the codebase
+- Use list_dir, glob_files, or grep_files to locate files before reading them
+- Use pagination (offset/limit) when reading large files
+- It is better to speculatively read multiple files as a batch when exploring
+
+### Prefer Dedicated Tools
+When a dedicated filesystem tool can do the job, use it instead of terminal_tool:
+- read_file instead of cat/head/tail
+- list_dir instead of ls
+- glob_files instead of find
+- grep_files instead of grep/rg
+- write_file/edit_file instead of echo/sed/awk
+These tools provide structured output optimized for your context window.
+Reserve terminal_tool for commands that have no dedicated tool equivalent.""",
 }
 
 
@@ -121,6 +144,8 @@ class BaseAgent(ABC, EventEmitter):
         self.max_steps = max_steps
         if tools and self._has_skill_tool(tools):
             system_prompt = system_prompt + BASE_PROMPTS["skill_supplement"]
+        if tools and self._has_filesystem_tools(tools):
+            system_prompt = system_prompt + BASE_PROMPTS["filesystem_supplement"]
         self.system_prompt = system_prompt
         self.use_long_term_memory = use_long_term_memory
         self._stream = stream
@@ -177,6 +202,14 @@ class BaseAgent(ABC, EventEmitter):
     @staticmethod
     def _has_skill_tool(tools: list[BaseTool]) -> bool:
         return any(t.name == "skill_tool" for t in tools)
+
+    @staticmethod
+    def _has_filesystem_tools(tools: list[BaseTool]) -> bool:
+        _FS_TOOL_NAMES = {
+            "read_file", "write_file", "edit_file",
+            "list_dir", "glob_files", "grep_files",
+        }
+        return any(t.name in _FS_TOOL_NAMES for t in tools)
 
     @property
     def tools(self) -> list[BaseTool]:

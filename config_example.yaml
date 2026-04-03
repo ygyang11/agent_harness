@@ -65,13 +65,19 @@ skill:
 
 # --- Approval (Human-in-the-Loop) ---
 approval:
-  mode: "never"                 # "never" — no approval prompts (default)
-                                # "auto"  — ask for tools not in always_allow
+  mode: "auto"                  # "never" — no approval prompts
+                                # "auto"  — ask for tools not in always_allow (recommended)
                                 # "always" — ask for every tool call
   always_allow:                 # Tool names that skip approval (auto/always modes)
-    # - "web_search"
+    - "read_file"
+    - "list_dir"
+    - "glob_files"
+    - "grep_files"
+    - "web_search"
+    - "web_fetch"
+    # write_file / edit_file not listed — require per-call confirmation
   always_deny:                  # Tool names that are always blocked
-    # - "delete_file"
+    # - "terminal_tool"
 
 # --- Tracing & Observability ---
 tracing:
