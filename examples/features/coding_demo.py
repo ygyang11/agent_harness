@@ -1,11 +1,12 @@
-"""Coding agent demo — a ReActAgent with filesystem tools solves a real coding task.
+"""Coding agent demo — a ReActAgent with filesystem + terminal tools.
 
-Demonstrates: filesystem tools (read/write/edit/list/glob/grep), tool selection,
-multi-step coding workflow, and the filesystem_supplement prompt.
+Demonstrates: filesystem tools (read/write/edit/list/glob/grep),
+terminal tool (git, pytest, shell commands), tool selection,
+multi-step coding workflow, and prompt supplements.
 
 Usage:
-    python examples/features/filesystem_demo.py          # auto mode (stream)
-    python examples/features/filesystem_demo.py --chat    # interactive mode
+    python examples/features/coding_demo.py          # auto mode (stream)
+    python examples/features/coding_demo.py --chat    # interactive mode
 """
 
 import argparse
@@ -16,15 +17,21 @@ from pathlib import Path
 from unittest.mock import patch
 
 from agent_app.tools.filesystem import FILESYSTEM_TOOLS
+from agent_app.tools.terminal import terminal_tool
 from agent_harness import HarnessConfig, ReActAgent
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
+ALL_TOOLS = [*FILESYSTEM_TOOLS, terminal_tool]
+
 SYSTEM_PROMPT = (
     "You are a skilled Python developer. "
-    "You have access to filesystem tools to explore, read, and modify code. "
+    "You have access to filesystem tools to explore, read, and modify code, "
+    "and a terminal tool to run shell commands (git, pytest, etc.). "
     "Always explore the project structure first before making changes. "
-    "Read files before editing them."
+    "Read files before editing them. "
+    "Use dedicated filesystem tools for file operations, "
+    "and terminal_tool only for commands without a dedicated equivalent."
 )
 
 TASK = """\
@@ -36,6 +43,7 @@ Tasks:
 3. Find and fix the bug in calculator.py (hint: division by zero is not handled)
 4. Implement the TODO in formatter.py — it should format numbers nicely
 5. Read the modified files to verify your changes look correct
+6. Run the tests to verify your fixes pass
 
 Start by exploring the project structure.
 """
@@ -45,6 +53,8 @@ def setup_mini_project(workspace: Path) -> None:
     """Create a mini Python project with intentional bugs."""
     src = workspace / "src"
     src.mkdir()
+
+    (src / "__init__.py").write_text("")
 
     (src / "calculator.py").write_text(
         '"""Simple calculator module."""\n\n\n'
@@ -70,8 +80,13 @@ def setup_mini_project(workspace: Path) -> None:
     tests = workspace / "tests"
     tests.mkdir()
 
+    (tests / "__init__.py").write_text("")
+
     (tests / "test_calculator.py").write_text(
         '"""Tests for calculator."""\n'
+        "import sys\n"
+        "from pathlib import Path\n\n"
+        "sys.path.insert(0, str(Path(__file__).resolve().parent.parent))\n\n"
         "from src.calculator import add, subtract, multiply, divide\n\n\n"
         "def test_add():\n"
         "    assert add(2, 3) == 5\n\n\n"
@@ -82,7 +97,6 @@ def setup_mini_project(workspace: Path) -> None:
         "def test_divide():\n"
         "    assert divide(10, 2) == 5.0\n\n\n"
         "def test_divide_by_zero():\n"
-        "    # This test would crash without proper error handling\n"
         "    try:\n"
         "        divide(1, 0)\n"
         "        assert False, 'Should have raised ValueError'\n"
@@ -105,9 +119,9 @@ async def run_auto(config: HarnessConfig, workspace: Path) -> None:
 
     agent = ReActAgent(
         name="coding-agent",
-        tools=list(FILESYSTEM_TOOLS),
+        tools=list(ALL_TOOLS),
         system_prompt=SYSTEM_PROMPT,
-        max_steps=15,
+        max_steps=20,
         config=config,
     )
 
@@ -135,7 +149,12 @@ async def run_auto(config: HarnessConfig, workspace: Path) -> None:
     if calc.exists():
         content = calc.read_text()
         bug_comment_removed = "# BUG" not in content
-        has_zero_guard = "b == 0" in content or "b != 0" in content or "ZeroDivisionError" in content or "ValueError" in content
+        has_zero_guard = (
+            "b == 0" in content
+            or "b != 0" in content
+            or "ZeroDivisionError" in content
+            or "ValueError" in content
+        )
         if bug_comment_removed and has_zero_guard:
             print("  ✓ Bug fix verified: division by zero is now handled")
         else:
@@ -153,18 +172,24 @@ async def run_auto(config: HarnessConfig, workspace: Path) -> None:
     else:
         print("  ✗ formatter.py not found")
 
+    if "terminal_tool" in tool_usage:
+        print(f"  ✓ terminal_tool used {tool_usage['terminal_tool']} time(s)")
+    else:
+        print("  ✗ terminal_tool was NOT used")
+
 
 async def run_chat(config: HarnessConfig, workspace: Path) -> None:
     """Chat mode: interact with the coding agent."""
     print("=== Coding Agent Demo (interactive) ===")
     print(f"Workspace: {workspace}")
+    print("Tools: filesystem (read/write/edit/list/glob/grep) + terminal")
     print("Type 'exit' to quit.\n")
 
     agent = ReActAgent(
         name="coding-agent",
-        tools=list(FILESYSTEM_TOOLS),
+        tools=list(ALL_TOOLS),
         system_prompt=SYSTEM_PROMPT,
-        max_steps=15,
+        max_steps=20,
         config=config,
     )
 
@@ -172,7 +197,9 @@ async def run_chat(config: HarnessConfig, workspace: Path) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Coding agent demo with filesystem tools")
+    parser = argparse.ArgumentParser(
+        description="Coding agent demo with filesystem + terminal tools",
+    )
     parser.add_argument("--chat", action="store_true", help="Interactive chat mode")
     return parser.parse_args()
 
@@ -188,10 +215,26 @@ async def main() -> None:
     print("Mini project created.\n")
 
     patches = [
-        patch("agent_app.tools.filesystem._security.get_workspace_root", return_value=workspace),
-        patch("agent_app.tools.filesystem.list_dir.get_workspace_root", return_value=workspace),
-        patch("agent_app.tools.filesystem.glob_files.get_workspace_root", return_value=workspace),
-        patch("agent_app.tools.filesystem.grep_files.get_workspace_root", return_value=workspace),
+        patch(
+            "agent_app.tools.filesystem._security.get_workspace_root",
+            return_value=workspace,
+        ),
+        patch(
+            "agent_app.tools.filesystem.list_dir.get_workspace_root",
+            return_value=workspace,
+        ),
+        patch(
+            "agent_app.tools.filesystem.glob_files.get_workspace_root",
+            return_value=workspace,
+        ),
+        patch(
+            "agent_app.tools.filesystem.grep_files.get_workspace_root",
+            return_value=workspace,
+        ),
+        patch(
+            "agent_app.tools.terminal.terminal_tool._workspace_root",
+            return_value=workspace,
+        ),
     ]
 
     try:

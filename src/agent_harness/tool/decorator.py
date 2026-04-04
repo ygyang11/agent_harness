@@ -145,8 +145,9 @@ class FunctionTool(BaseTool):
         name: str,
         description: str,
         schema: ToolSchema,
+        executor_timeout: float | None = None,
     ) -> None:
-        super().__init__(name=name, description=description)
+        super().__init__(name=name, description=description, executor_timeout=executor_timeout)
         self._fn = ensure_async(fn)
         self._schema = schema
 
@@ -163,6 +164,7 @@ def tool(
     *,
     name: str | None = None,
     description: str | None = None,
+    executor_timeout: float | None = None,
 ) -> Any:
     """Decorator to convert a function into a Tool.
 
@@ -183,6 +185,7 @@ def tool(
             name=schema.name,
             description=schema.description,
             schema=schema,
+            executor_timeout=executor_timeout,
         )
 
     if fn is not None:

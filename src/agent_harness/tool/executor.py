@@ -48,8 +48,6 @@ class ToolExecutor(EventEmitter):
         Returns:
             ToolResult with the execution result or error.
         """
-        timeout = timeout or self.config.default_timeout
-
         await self.emit(
             "tool.execute.start",
             tool_name=tool_call.name,
@@ -67,11 +65,14 @@ class ToolExecutor(EventEmitter):
 
             tool = self.registry.get(tool_call.name)
 
+            # Per-tool timeout: explicit param > tool declaration > global default
+            effective_timeout = timeout or tool.executor_timeout or self.config.default_timeout
+
             # Execute with concurrency limit and timeout
             async with self._semaphore:
                 result_str = await asyncio.wait_for(
                     tool.execute(**tool_call.arguments),
-                    timeout=timeout,
+                    timeout=effective_timeout,
                 )
 
             result = ToolResult(
@@ -89,7 +90,7 @@ class ToolExecutor(EventEmitter):
             return result
 
         except asyncio.TimeoutError:
-            error_msg = f"Tool '{tool_call.name}' timed out after {timeout}s"
+            error_msg = f"Tool '{tool_call.name}' timed out after {effective_timeout}s"
             logger.warning(error_msg)
             await self.emit(
                 "tool.execute.error",

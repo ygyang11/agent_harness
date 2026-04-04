@@ -68,9 +68,16 @@ class BaseTool(ABC):
     name: str
     description: str
 
-    def __init__(self, name: str, description: str) -> None:
+    def __init__(
+        self,
+        name: str,
+        description: str,
+        *,
+        executor_timeout: float | None = None,
+    ) -> None:
         self.name = name
         self.description = description
+        self.executor_timeout = executor_timeout
 
     @abstractmethod
     async def execute(self, **kwargs: Any) -> str:

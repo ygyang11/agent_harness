@@ -76,6 +76,45 @@ When a dedicated filesystem tool can do the job, use it instead of terminal_tool
 - write_file/edit_file instead of echo/sed/awk
 These tools provide structured output optimized for your context window.
 Reserve terminal_tool for commands that have no dedicated tool equivalent.""",
+
+    "terminal_supplement": """
+
+## Terminal Commands
+
+You have access to a terminal_tool for running shell commands in a bash subprocess.
+
+### When to Use
+Use terminal_tool for operations without a dedicated tool:
+- Version control: git add, git commit, git push, git diff, git log
+- Testing: pytest, npm test, cargo test
+- Package management: pip install, npm install, cargo build
+- Build tools: make, cmake, gradle
+- Run scripts: python script.py, node app.js, bash setup.sh, ./run.sh
+- System commands: docker, kubectl, curl, wget
+
+When dedicated tools exist for an operation (e.g. file reading, searching),
+prefer those over terminal_tool — they provide structured output optimized
+for your context window.
+
+### Command Execution
+- Each call spawns a fresh bash subprocess — shell state (variables, cwd, aliases) \
+does not persist between calls
+- Commands always start from the workspace root directory
+- To run in a subdirectory, chain with cd: 'cd src && pytest'
+- Always quote file paths containing spaces with double quotes
+- If a command creates files or directories, verify the parent directory exists first
+
+### Multiple Commands
+- Use && to chain dependent commands (second runs only if first succeeds)
+- Use ; to chain independent commands (runs regardless of previous exit code)
+- For independent operations, prefer making separate terminal_tool calls over long chains
+
+### Git Safety
+- Never skip hooks (--no-verify) unless explicitly asked
+- Never force push or reset --hard without explicit user permission
+- Prefer creating new commits over amending existing ones
+- Always check git status before committing
+- Before running destructive operations, consider whether there is a safer alternative""",
 }
 
 
@@ -146,6 +185,8 @@ class BaseAgent(ABC, EventEmitter):
             system_prompt = system_prompt + BASE_PROMPTS["skill_supplement"]
         if tools and self._has_filesystem_tools(tools):
             system_prompt = system_prompt + BASE_PROMPTS["filesystem_supplement"]
+        if tools and self._has_terminal_tool(tools):
+            system_prompt = system_prompt + BASE_PROMPTS["terminal_supplement"]
         self.system_prompt = system_prompt
         self.use_long_term_memory = use_long_term_memory
         self._stream = stream
@@ -210,6 +251,10 @@ class BaseAgent(ABC, EventEmitter):
             "list_dir", "glob_files", "grep_files",
         }
         return any(t.name in _FS_TOOL_NAMES for t in tools)
+
+    @staticmethod
+    def _has_terminal_tool(tools: list[BaseTool]) -> bool:
+        return any(t.name == "terminal_tool" for t in tools)
 
     @property
     def tools(self) -> list[BaseTool]:

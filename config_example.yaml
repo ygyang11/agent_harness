@@ -75,9 +75,10 @@ approval:
     - "grep_files"
     - "web_search"
     - "web_fetch"
-    # write_file / edit_file not listed — require per-call confirmation
+    # terminal_tool not listed — each execution requires user confirmation
+    # To auto-allow: add "terminal_tool" (NOT recommended for untrusted environments)
   always_deny:                  # Tool names that are always blocked
-    # - "terminal_tool"
+    # - "terminal_tool"         # Uncomment to fully block terminal access
 
 # --- Tracing & Observability ---
 tracing:
